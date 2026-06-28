@@ -1,0 +1,13 @@
+# Hotify 自测用最小 Gotify 配置（独立实例，不碰用户 bark/gotify）
+server:
+  port: 25243            # 避开用户实例的 25233/25234
+  ssl:
+    enabled: false       # 本地纯 http（域名证书对不上 127.0.0.1）
+database:
+  dialect: sqlite3
+  connection: data/gotify.db   # 独立库 → 首次建库自动 admin/admin
+defaultuser:
+  name: admin
+  pass: admin
+passstrength: 10
+registration: false

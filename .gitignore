@@ -1,0 +1,20 @@
+# === 机密：永不入库 ===
+private.json
+*_private.json
+*private.json
+bridge_config.json
+push_tokens.json
+agconnect-services.json
+
+# === Python ===
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# === 本地自测 Gotify 实例数据 ===
+test_local/data/
+
+# === 临时 / 日志 ===
+*.log
+.env
