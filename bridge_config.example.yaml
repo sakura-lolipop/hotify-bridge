@@ -1,0 +1,20 @@
+# bridge_config.yaml — Hotify 桥配置（复制本文件为 bridge_config.yaml 再填）
+# 格式超宽松：每行 `键: 值`，值就是冒号后面的整段——反斜杠、冒号都原样，引号可有可无。# 开头是注释。
+
+# Gotify 地址（App 视角）。完整地址 https://你的域名:端口（远程/域名）；或只填端口→同机明文。App 上报会覆盖。
+gotify_url:
+
+# Gotify client token（读消息 / 订阅流；机密，别提交 git）
+gotify_token:
+
+# 桥连 Gotify 的本地地址，覆盖上面的 gotify_url。同机 TLS Gotify 填 https://127.0.0.1:端口（自动跳过证书校验、免 hairpin）；留空→用 gotify_url
+gotify_url_local:
+
+# /register 监听端口。留空→默认 25238（启动 ⚠️ 提醒）；填了用填的
+register_port:
+
+# TLS 证书【文件路径】。填了→/register 走 https；留空→明文 http（启动 ⚠️ 提醒降级）。Windows 直接 C:\Users\... 或 C:/Users/... 都行（反斜杠不转义）。
+tls_cert_file:
+
+# TLS 私钥【文件路径】，与 tls_cert_file 配对。与 Gotify 共用同一张域名证书。
+tls_key_file:

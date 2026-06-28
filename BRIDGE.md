@@ -34,21 +34,22 @@ python -u gotify_pushkit_bridge.py                       # -u 无缓冲，日志
 ```
 然后常驻：来新消息打印 `[Gotify][实时] id=... 已转发`（完整模式）或 `⏭ 跳过推送（private.json 未配置）`（脊柱模式）。断线自动 5 秒重连 + 回补。
 
-## 配置（环境变量 / 文件）
-| 项 | 怎么设 | 说明 |
+## 配置（bridge_config.yaml：动静结合 + 文件）
+| 项 | 在哪 | 说明 |
 |---|---|---|
-| `GOTIFY_HTTP_URL` | 环境变量 | Gotify https 地址，默认 `https://<your-gotify-host>:<port>` |
-| `GOTIFY_CLIENT_TOKEN` | 环境变量 | **必填**。client token（读消息/订阅流）。见下方「client token 怎么拿」 |
+| `gotify_url` / `gotify_token` | `bridge_config.yaml`（动态，App 上报）> env 兜底 | **必填**。Gotify 地址 + client token（读消息/订阅流）。见下方「client token 怎么拿」 |
+| `register_port` | `bridge_config.yaml`（静态，部署者填） | `/register` 监听端口；**留空 → 默认 25238** |
+| `tls_cert_file` / `tls_key_file` | `bridge_config.yaml`（静态，部署者填） | 填了 → `/register` 走 https；空 → 明文 http（仅 LAN/调试）。与 Gotify 同一张域名证书 |
 | `private.json` | 同目录文件 | 华为服务账号（AGC 下载，含 RSA 私钥）。缺失=脊柱模式（跳过推送，不崩） |
 | `push_tokens.json` | 自动生成 | App 上报的 push token 存这里，别手改 |
 | `TEST_MESSAGE` | 源码常量 | 已设 `True`，调测期绕 MARKETING 频控（每项目 1000 条/天）；正式改 `False` |
 | `NOTIFY_CATEGORY` | 源码常量 | 推送类目，须与申到的自分类权益一致（默认 `ACCOUNT`） |
 
-⚠️ token / `private.json` 私钥都是**机密**，靠环境变量注入 + 本地文件，**别提交 git**。
+⚠️ token / `private.json` 私钥都是**机密**，靠本地文件 + bridge_config.yaml（gitignore）/ 环境变量，**别提交 git**。
 
 ## 智能模式：Gotify 地址（端口 vs 完整地址）
-桥连 Gotify 的地址（App「设置」的"Gotify 地址"，或 env / `bridge_config.json`）支持两种输入：
-- **只输端口号**（纯数字，如 `25234` / `25233`）→ 桥认为 Gotify **与本桥同机部署**，自动连 `http://127.0.0.1:<端口>`（最快、免 TLS 证书）。
+桥连 Gotify 的地址（App「设置」的"Gotify 地址"，或 env / `bridge_config.yaml`）支持两种输入：
+- **只输端口号**（纯数字，即你的 Gotify 端口）→ 桥认为 Gotify **与本桥同机部署**，自动连 `http://127.0.0.1:<端口>`（最快、免 TLS 证书）。
 - **完整地址**（如 `https://<your-gotify-host>:<port>`）→ **远程 Gotify**，按原样连（wss/https，需有效证书）。
 - 没带协议的（如 `<your-gotify-host>:<port>`）→ 自动补 `http://`。
 
@@ -90,10 +91,20 @@ Gotify WebUI（`https://<your-gotify-host>`）→ 登录 → **CLIENTS** 页 →
 5. App 上报 push token（`POST 桥/register`）→ `push_tokens.json` 有值
 6. 跑桥 → 副机发条消息 → 鸿蒙锁屏应弹
 
-## 部署（远期）
-- **本机调试**：终端常驻 `python -u gotify_pushkit_bridge.py`
-- **持久化**：systemd / docker `restart=always` / Windows 任务计划或服务（防进程崩）
-- **建议**：和 Gotify 一起部署到远程主机（<your-gotify-host>），桥走 localhost 连 Gotify，外网只暴露必要端口
+## 部署（生产拓扑）
+**桥和 Gotify 同机，各自 serve HTTPS，共用同一张证书**（各自端口）。手机走 https 触达两者；桥也走 https 连 Gotify——同一张证书、同一域名，校验通过。
+
+```
+  手机 ──https──▶ Gotify   https://你的域名:<端口>
+        ──https──▶ 桥       https://你的域名:25238  (/register，上报 push token)
+  桥   ──https──▶ Gotify   https://你的域名:<端口>   (同证书同域名)
+```
+
+- **一张证书喂两个服务**：Gotify 在 `config.yml`（`ssl.enabled` + 证书/私钥路径）加载；桥在 `bridge_config.yaml` 的 `tls_cert_file` / `tls_key_file` 填**同一份证书文件**。证书签一次（acme.sh / certbot / Let's Encrypt），两边都指过去。
+- **桥没填证书 → 退化成明文 http**（仅 LAN/调试）。任何公网部署都得填——否则手机上报的 push token 走明文，蜂窝/外网下裸奔。
+- **桥里填的"Gotify 地址"用完整 https**（如 `https://你的域名:<端口>`），别用"只填端口"的智能模式——那假设 Gotify 是明文 http，TLS 开了连不上。
+- **本机调试**：终端常驻 `python -u gotify_pushkit_bridge.py`。
+- **持久化**：systemd / docker `restart=always` / Windows 任务计划或服务（防进程崩）。
 
 ---
 *更新：2026-06-21。实测脊柱模式 OK（连真实 Gotify，id=2814，订阅 /stream 正常）。*

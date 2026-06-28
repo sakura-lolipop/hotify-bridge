@@ -3,6 +3,7 @@ private.json
 *_private.json
 *private.json
 bridge_config.json
+bridge_config.yaml
 push_tokens.json
 agconnect-services.json
 
