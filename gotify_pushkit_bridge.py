@@ -300,6 +300,11 @@ def send_to_huawei(title, message, priority=4, extras=None, appid=0):
 
     # 逐 token 推（非批量）：① 能按单 token 拿返回码、清理失效 token（bark 式，device 卸载/重装后旧 token 不再当孤儿反复推）；
     # ② 多设备各自独立、互不影响。代价：N 台=N 次 API（自用几台无妨；JWT 缓存复用）。
+    # 死-token 白名单：仅这两个码语义 = "该 token 无效/投不出去"（≈ APNs Unregistered），其余码一律【保留】。
+    #   80100000 部分 token 失败（单 token 推时 failure 的 illegal_tokens 就是它）/ 80300007 所有 token 无效。
+    #   鉴权 802x、权益 80300002、消息超长 80300008、频控、系统错 81xxxxx 都跟 token 死活无关——误删会丢好 token
+    #   （鉴权闪一下全台端最惨）。码来自华为官方码表，不拍脑袋。详见 CHANGELOG。
+    DEAD_TOKEN_CODES = {"80100000", "80300007"}
     delivered, dead = 0, []
     for dev_id, tok in list(devs.items()):
         payload = {
@@ -323,22 +328,29 @@ def send_to_huawei(title, message, priority=4, extras=None, appid=0):
                 if code == "80000000":
                     delivered += 1
                     print(f"[PushKit] ✓ {dev_id} code=80000000")
-                else:
-                    # 非 success：多半该 token 失效 → 删掉。⚠️ 注意：华为对 dead token 也常返 80000000（接受但不投递），
-                    # 那种检测不到、留着无害（同 bark 不主动 GC）。这里只清华为【明确拒】的。
-                    print(f"[PushKit] ✗ {dev_id} code={code} msg={resp.get('msg')} → 删该 token")
+                elif code in DEAD_TOKEN_CODES:
+                    print(f"[PushKit] ✗ {dev_id} code={code} msg={resp.get('msg')} → 该 token 无效")
                     dead.append(dev_id)
+                else:
+                    # 类 B（鉴权 802x / 权益 80300002 / 消息超长 80300008 / 频控 / 系统错 81xxxxx）：与 token 死活无关 → 保留
+                    print(f"[PushKit] ⚠️ {dev_id} code={code} msg={resp.get('msg')} → 保留（非死-token 码，疑系统/参数问题）")
         except urllib.error.HTTPError as e:
-            print(f"[PushKit] ✗ {dev_id} HTTP {e.code}: {e.read().decode()[:120]} → 删该 token")
-            dead.append(dev_id)
+            # HTTP 层错（401/403/429/5xx）：系统性/鉴权/限流 → 保留（旧逻辑这里误删，最危险的一刀）
+            print(f"[PushKit] ⚠️ {dev_id} HTTP {e.code}: {e.read().decode()[:120]} → 保留（HTTP 层错误，非死 token）")
         except Exception as e:
             print(f"[PushKit] ✗ {dev_id} {type(e).__name__}: {e}（网络？保留 token）")
     if dead:
-        t = load_tokens()           # 重新读（期间可能有新 register），避免覆盖
-        for d in dead:
-            t.pop(d, None)
-        save_tokens(t)
-        print(f"[PushKit] 清理 {len(dead)} 个失效 token：{dead}")
+        # 全局闸门：本轮【至少一台成功】才删。否则多半是系统性故障（鉴权/配置/权益/服务端），死码也可能被误触发
+        # （如 app 包名配错时全台返 80300007）→ 一台都不删，防"全锅端"丢好 token。
+        if delivered == 0:
+            print(f"[PushKit] ⚠️ 本轮 0 台成功，疑系统性故障，保留全部 {len(dead)} 个疑似失效 token（不删）：{dead}")
+            dead = []
+        else:
+            t = load_tokens()           # 重新读（期间可能有新 register），避免覆盖
+            for d in dead:
+                t.pop(d, None)
+            save_tokens(t)
+            print(f"[PushKit] 清理 {len(dead)} 个失效 token：{dead}")
     print(f"[PushKit] 推送完成：{delivered} 台成功" + (f"，{len(dead)} 失效已清" if dead else ""))
 
 
