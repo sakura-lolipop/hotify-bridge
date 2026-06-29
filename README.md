@@ -11,11 +11,13 @@
 
 这是 Hotify 的**服务端**那一半。鸿蒙客户端 App 在另一个（闭源）仓库。本桥**可自托管**——你把它跑在自己的 Gotify 实例旁边，通知只经过你自己掌控的基础设施。
 
+> 📌 **术语**：本文档里的「桥 / bridge」就是这个服务端程序；App「设置」里它叫**「Hotify 推送服务」**（可选字段）——同一个东西，两个叫法。
+
 ## ✨ 它干什么
 - 订阅 Gotify 的 `/stream`（WebSocket）收实时消息。
 - 把每条消息转发到华为 Push Kit v3（`POST /v3/{project_id}/messages:send`），作为锁屏通知。
 - 断线自动重连 + **回补**断开期间漏掉的消息（按 id 高水位去重——不重不漏）。
-- 开 `POST /register` 接收 App 上报的 push token + Gotify 配置。
+- 开 `POST /register` 接收 App 上报：push token（每次刷新）+ Gotify 配置（**首次上报锁定**，之后忽略——防公网抢首注改后端）。
 - 按 token 逐台投递，失效 token 自动清理（bark 式）。
 
 ## 🔗 与 Gotify 协作
@@ -43,11 +45,11 @@ python -u gotify_pushkit_bridge.py
 ```
 
 ## ⚙️ 配置
-Gotify 配置读取优先级：**App 上报**（`POST /register`，持久化到 `bridge_config.yaml`）> **环境变量** > 无（`waiting for app`）。
+Gotify 配置 = **first-set wins**（照 SSH 主机指纹 TOFU）：桥【未配置】时收 App 首次 `POST /register` 上报（持久化到 `bridge_config.yaml` = 锁定），【已配置】后 App 再发的 gotify 一律忽略——**防公网攻击者抢首注把后端改成他的 Gotify**。要零赛跑：在 yaml 直接预填 gotify（桥启动即锁）。env 仅启动兜底；push token 则每次都刷新。
 
 | 位置 | 键 | 说明 |
 |---|---|---|
-| `bridge_config.yaml` | `gotify_url`、`gotify_token`（动态，App 上报）**+** `gotify_url_local`、`register_port`、`tls_cert_file`、`tls_key_file`（静态，部署者填） | 从 `.example` 复制。**gitignore——别提交真 token。** `register_port` 空 → 默认 25238；`tls_*` 空 → `/register` 走明文 http。 |
+| `bridge_config.yaml` | `gotify_url`、`gotify_token`（**首次 App 上报锁定** / 或 yaml 预填）**+** `gotify_url_local`、`register_port`、`tls_cert_file`、`tls_key_file`（静态，部署者填） | 从 `.example` 复制。**gitignore——别提交真 token。** `register_port` 空 → 默认 25238；`tls_*` 空 → `/register` 走明文 http。 |
 | 环境变量 | `GOTIFY_HTTP_URL`、`GOTIFY_CLIENT_TOKEN` | 仅动态 gotify 字段的 headless 兜底 |
 | `private.json` | 华为服务账号（RSA 私钥） | AGC 下载。**gitignore。** 缺失 = "脊柱模式"（只订阅，跳过 Push Kit）。 |
 | `push_tokens.json` | 设备 push token | App 上报自动管理。gitignore。 |

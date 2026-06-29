@@ -4,10 +4,11 @@ gotify_pushkit_bridge.py
 Gotify ↔ 华为 Push Kit(HarmonyOS NEXT v3) 转发桥。
 链路：[发送方] -> Gotify --/stream--> 本桥 --Push Kit v3--> 鸿蒙(锁屏弹+图标)
 
-配置（bridge_config.yaml，动静结合）：静态项（register_port/tls_cert_file/tls_key_file，部署者填）+
-      动态项（gotify_url/gotify_token，App POST /register 上报持久化；空则 env GOTIFY_HTTP_URL/
-      GOTIFY_CLIENT_TOKEN 兜底）。save 写回完整文件，故 App 改动态项时静态项原样保留。
-      gotify 两项都没有 = waiting for app（开 /register 等上报），不拿占位符瞎连。
+配置（bridge_config.yaml）：静态项（register_port/tls_cert_file/tls_key_file，部署者填）+
+      gotify_url/gotify_token（首次由 App POST /register 上报、写回持久化【锁定】；或部署者直接 yaml 预填）。
+      模型 = first-set wins（照 SSH 主机指纹 TOFU）：桥【未配置】才收 App 的 gotify 上报（App 已先 check 验过），
+      【已配置】后一律忽略——防公网攻击者抢首注把后端改成他的 Gotify。要零赛跑：yaml 预填 gotify 即启动即锁。
+      gotify 两项都没有 = waiting for app（开 /register 等 App 首注），不拿占位符瞎连。
 
 鉴权：服务账号 JWT 直接当 Bearer（官方 push-jwt-token，不换 access_token）。
 图标：不设 notification.image —— 通知小图标默认就是 Hotify 自己的应用图标（即 logo）。
@@ -47,7 +48,7 @@ BRIDGE_CONFIG_FILE = "bridge_config.yaml"
 # 一个文件装两类：静态项（部署者填，启动读）+ 动态项（App 运行时上报）。save 写回完整 _cfg，
 # 故 App 改动态项（gotify）时静态项（port/tls）原样保留。Go 重写时解析同一份 YAML 即可。
 _CFG_DEFAULTS = {
-    # —— 动态项（App 上报 / env 兜底）——
+    # —— gotify 项（首注锁定：App 首次 POST /register 上报后写回 yaml 锁定；或部署者 yaml 预填；env 仅启动兜底）——
     "gotify_url": "",          # Gotify 地址（智能模式：只填端口→http://127.0.0.1 同机）
     "gotify_token": "",        # Gotify client token（读消息/订阅流；机密）
     # —— 静态项（部署者填，启动读）——
@@ -145,7 +146,7 @@ def _seed_config_file():
             for k, v in _CFG_DEFAULTS.items():
                 f.write(f"{k}: {v}\n")
         print(f"[配置] 未找到 {BRIDGE_CONFIG_FILE}，已建一份默认配置（无 example，故无注释）。")
-    print(f"[配置] ✏️ 请编辑 {BRIDGE_CONFIG_FILE} 填入 gotify / 证书路径，存盘后重启桥。")
+    print(f"[配置] ✏️ 请编辑 {BRIDGE_CONFIG_FILE} 填入 gotify / 证书路径，存盘后重启 Hotify 推送服务。")
 
 
 # ──────────────────────── 华为服务账号 + 推送 ────────────────────────
@@ -171,7 +172,7 @@ def load_service_account():
     global _sa
     if not os.path.exists(SERVICE_ACCOUNT_FILE):
         print(f"[PushKit] ⚠️ 未找到 {SERVICE_ACCOUNT_FILE}（华为服务账号 RSA 私钥）。")
-        print(f"[PushKit]    桥会照常订阅 Gotify /stream，但 Push Kit 转发将跳过。")
+        print(f"[PushKit]    Hotify 推送服务会照常订阅 Gotify /stream，但 Push Kit 转发将跳过。")
         print(f"[PushKit]    要完整推送：AGC 建项目→开通 Push Kit→下载服务账号 private.json 放本目录。")
         return
     with open(SERVICE_ACCOUNT_FILE, "r", encoding="utf-8") as f:
@@ -219,7 +220,12 @@ def save_tokens(d):
 class RegisterHandler(BaseHTTPRequestHandler):
     """App 上报：POST /register
     body = {client, token:<push_token>(可选), gotify_url, gotify_token}。
-    gotify 配置持久化到 bridge_config.yaml，桥据此订阅；push token 存 push_tokens.json。"""
+    模型 = first-set wins（照 SSH 主机指纹 TOFU + bark 式 device key）：
+      · push token：每次都注册/刷新（token 会变，桥要最新的；返 device_known=是否之前已登记过）。
+      · gotify 配置：桥【未配置】才收 App 上报（App 已先 check 验过）→ 写回 yaml 持久化 = 锁定；
+        桥【已配置】后 App 再发的 gotify 一律【忽略】——防公网攻击者抢首注把后端改成他的 Gotify。
+        要零赛跑：在 yaml 预填 gotify，桥启动即"已配置"，/register 永不收首注。
+    响应 {ok, device_known, gotify_set, ignored_gotify}——App 据此给反馈。"""
     def do_POST(self):
         if self.path != "/register":
             self.send_response(404); self.end_headers(); return
@@ -229,29 +235,47 @@ class RegisterHandler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             self.send_response(400); self.end_headers(); return
         client = payload.get("client", "default")
-        # 1) 华为 push token（可选——milestone 1 没 agconnect 时没有）
         push_token = payload.get("token") or payload.get("push_token")
+
+        # 1) 华为 push token：每次都写（token 会刷新；无 agconnect 时为空 → 跳过）。
+        device_known = False
         if push_token:
-            tokens = load_tokens(); tokens[client] = push_token; save_tokens(tokens)
-            print(f"[注册] {client} push token -> {push_token[:12]}...")
-        # 2) Gotify 配置（App 上报 → 持久化 → 桥订阅用）
+            tokens = load_tokens()
+            device_known = client in tokens          # 这个 UUID 之前是否已登记过（反馈用：新设备 vs 已注册过）
+            tokens[client] = push_token
+            save_tokens(tokens)
+            print(f"[注册] {client} push token -> {push_token[:12]}... ({'已登记/刷新' if device_known else '新设备'})")
+
+        # 2) gotify 配置：first-set wins，之后锁（防公网抢首注改后端）。
         gurl = normalize_gotify_addr(payload.get("gotify_url") or "")
         gtok = payload.get("gotify_token") or ""
-        changed = False
-        if gurl and gurl != _cfg["gotify_url"]:
-            _cfg["gotify_url"] = gurl; changed = True
-        if gtok and gtok != _cfg["gotify_token"]:
-            _cfg["gotify_token"] = gtok; changed = True
-        if gurl:
-            _autodetect_local_gotify()   # App 上报了域名 → 探同机 Gotify，探到自动走 localhost
-        if changed:
-            save_bridge_config()
-            print(f"[注册] App 上报 Gotify 配置已保存：url={_cfg['gotify_url']} "
-                  f"token={'***已设置***' if _cfg['gotify_token'] else '无'}")
-        if not (push_token or changed):
+        already = bool(_cfg.get("gotify_url") and _cfg.get("gotify_token"))   # 桥已配置（yaml 预填 或 之前首注过）
+        gotify_set = False
+        ignored_gotify = False
+        if not already:
+            if gurl and gtok:                          # App 带了已验过的 gotify → 首注 + 锁定
+                _cfg["gotify_url"] = gurl
+                _cfg["gotify_token"] = gtok
+                save_bridge_config()                   # 写回 yaml 持久化 → 重启不丢 = 锁定
+                _autodetect_local_gotify()
+                gotify_set = True
+                print(f"[注册] 首次收到 App 的 Gotify 配置，已保存：url={_cfg['gotify_url']} token=***已设置***")
+            # App 没带 gotify（纯 token 刷新）→ 桥仍 waiting，不动配置
+        else:
+            if gurl or gtok:                            # 桥已配置 → App 的 gotify 一律忽略（防改后端）
+                ignored_gotify = True
+                print(f"[注册] Hotify 推送服务配置已存在，本次忽略。需要修改 Gotify 配置：手动修改 bridge_config.yaml 后重启 Hotify 推送服务")
+
+        if not (push_token or gotify_set or ignored_gotify):
             print(f"[注册] {client} 上报为空（无 token 无配置）")
-        self.send_response(200); self.end_headers()
-        self.wfile.write(b'{"ok":true}')
+
+        # 响应：App 据此给反馈（device_known=新/已登记，gotify_set=首注成功，ignored_gotify=桥已配置被忽略）
+        body = json.dumps({"ok": True, "device_known": device_known,
+                           "gotify_set": gotify_set, "ignored_gotify": ignored_gotify})
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(body.encode("utf-8"))
 
     def log_message(self, *args):
         pass
@@ -435,7 +459,7 @@ def init_last_id():
     msgs = _recent_messages(limit=1)
     if msgs:
         _last_msg_id = msgs[0].get("id", 0)
-        print(f"[Gotify] 高水位初始化 = {_last_msg_id}（不回放历史）")
+        print(f"[Gotify] 从最新消息（id={_last_msg_id}）开始，只转发之后的新消息，历史不补推")
 
 
 def _forward(msg, tag="实时"):
@@ -485,8 +509,8 @@ async def keep_subscribed():
         sig = (_gotify_connect_url(), _cfg.get("gotify_token"))
         if not sig[0] or not sig[1]:
             if last_sig != "waiting":
-                print("[桥] ⏳ waiting for app：还没收到 Gotify 配置。"
-                      "在 App「设置」填 Gotify 地址 + client token 并保存，桥会自动接上订阅。")
+                print("[Hotify 推送服务] ⏳ 等待 App 上报 Gotify 配置。"
+                      "在 App「设置」填 Gotify 地址 + client token 并保存，本服务会自动接上订阅。")
                 last_sig = "waiting"
             await asyncio.sleep(5)
             continue
@@ -505,9 +529,9 @@ async def keep_subscribed():
 if __name__ == "__main__":
     init_config()           # 读持久化(App上报)/env；都没有则空 = waiting for app
     if _cfg["gotify_url"] and _cfg["gotify_token"]:
-        print(f"[桥] 已有 Gotify 配置：{_cfg['gotify_url']}")
+        print(f"[Hotify 推送服务] 已有 Gotify 配置：{_cfg['gotify_url']}")
     else:
-        print("[桥] 无 Gotify 配置，waiting for app（开 /register 等 App 上报）")
+        print("[Hotify 推送服务] 无 Gotify 配置，等待 App 上报（开 /register 等）")
     load_service_account()
     threading.Thread(target=start_register_server, daemon=True).start()
     try:

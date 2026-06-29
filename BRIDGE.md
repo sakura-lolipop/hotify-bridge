@@ -2,12 +2,13 @@
 
 > Gotify ↔ 华为 Push Kit 转发桥。订阅 Gotify `/stream`，把新消息经华为 Push Kit v3 推到鸿蒙锁屏。
 > 架构/进度见 `task.md`，桥源码见 `gotify_pushkit_bridge.py`。
+> 📌 **术语**：本文档的「桥」= App「设置」里的「Hotify 推送服务」（可选字段），同一个东西。
 
 ## 它干什么
 ```
 副机 SmsForwarder ─▶ Gotify(存/流) ─▶ 【本桥】─▶ 华为 Push Kit v3 ─▶ 鸿蒙锁屏
 ```
-桥干两件事：① 订阅 Gotify `/stream` 收新消息（+断线按 id 高水位**回补**漏的消息）② 经 Push Kit v3 推到已注册设备。另开 `POST /register` 接收 App 上报的 push token。
+桥干两件事：① 订阅 Gotify `/stream` 收新消息（+断线按 id 高水位**回补**漏的消息）② 经 Push Kit v3 推到已注册设备。另开 `POST /register` 接收 App 上报：push token 每次刷新；gotify 配置 **first-set wins**（首次上报锁定写回 yaml，之后再报忽略——防公网攻击者抢首注把后端改成他的 Gotify；要零赛跑就 yaml 预填）。
 
 ## 两种运行状态
 - **脊柱模式（现在就能跑）**：无 `private.json` → 订阅 Gotify `/stream`、断线回补都正常，**Push Kit 转发跳过**（日志 `⏭ 跳过推送`）。用于先验证 Gotify 链路。
@@ -37,7 +38,7 @@ python -u gotify_pushkit_bridge.py                       # -u 无缓冲，日志
 ## 配置（bridge_config.yaml：动静结合 + 文件）
 | 项 | 在哪 | 说明 |
 |---|---|---|
-| `gotify_url` / `gotify_token` | `bridge_config.yaml`（动态，App 上报）> env 兜底 | **必填**。Gotify 地址 + client token（读消息/订阅流）。见下方「client token 怎么拿」 |
+| `gotify_url` / `gotify_token` | `bridge_config.yaml`（**首次 App 上报锁定** / yaml 预填）> env 兜底 | **必填**。Gotify 地址 + client token（读消息/订阅流）。首次 App 上报后锁定，之后再报桥忽略（防公网抢首注改后端）。见下方「client token 怎么拿」 |
 | `register_port` | `bridge_config.yaml`（静态，部署者填） | `/register` 监听端口；**留空 → 默认 25238** |
 | `tls_cert_file` / `tls_key_file` | `bridge_config.yaml`（静态，部署者填） | 填了 → `/register` 走 https；空 → 明文 http（仅 LAN/调试）。与 Gotify 同一张域名证书 |
 | `private.json` | 同目录文件 | 华为服务账号（AGC 下载，含 RSA 私钥）。缺失=脊柱模式（跳过推送，不崩） |
@@ -69,6 +70,7 @@ Gotify WebUI（`https://<your-gotify-host>`）→ 登录 → **CLIENTS** 页 →
 | 订阅立刻断 / 401 | `GOTIFY_CLIENT_TOKEN` 错（填成 app token）或失效 → 换 client token |
 | 收到消息没推到手机 | ① 脊柱模式（无 `private.json`，正常跳过）② 没设备注册（看 `push_tokens.json` 是否有值）③ Push Kit 频控/自分类权益（看 Push Kit 返回 code，非 `80000000`=失败） |
 | 断线 | 自动 5 秒重连 + 按高水位回补漏的消息（≥100 条会告警：超出的老消息去 App `GET /message` 看） |
+| App 状态条显示「实时（8s刷新）」而非「实时」 | App 的 WebSocket 直连被 **Gotify 自带的 Origin 校验**挡了——ArkTS 原生客户端会发非同源 Origin，Gotify 默认返 403，App 自动降级 8s 轮询兜底（**消息照收**，只是从秒到变 8s 内）。要即时推送：Gotify `config.yml` 设 `server.stream.allowedorigins: ['.*']`（合法正则，**不是 `*`**）+ `server.cors.alloworigins`，重启 Gotify。桥走 Python websockets 不发 Origin 不受影响；只有 App 的 ArkTS 客户端中招。详见 [gotify#372](https://github.com/gotify/server/issues/372)/[#580](https://github.com/gotify/server/issues/580) |
 
 ## 推送模式 & 鉴权（已核实：服务账号 JWT，**非** client_id/secret）
 - 鸿蒙 NEXT Push Kit 服务端**官方推荐 = 服务账号 + RSA 私钥 JWT**（[push-jwt-token](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/push-jwt-token)）。本桥即此法，别改。
@@ -107,4 +109,5 @@ Gotify WebUI（`https://<your-gotify-host>`）→ 登录 → **CLIENTS** 页 →
 - **持久化**：systemd / docker `restart=always` / Windows 任务计划或服务（防进程崩）。
 
 ---
-*更新：2026-06-21。实测脊柱模式 OK（连真实 Gotify，id=2814，订阅 /stream 正常）。*
+*更新：2026-06-29。`/register` 加固：gotify 配置改 **first-set wins**（首次 App 上报锁定写回 yaml，之后再报忽略，防公网抢首注改后端；要零赛跑就 yaml 预填）；push token 每次刷新；响应加 `device_known`/`ignored_gotify` 给 App 反馈。*
+*2026-06-28：脊柱模式实测 OK（连真实 Gotify，id=2814，订阅 /stream 正常）；FAQ「实时(8s刷新)」降级 = Gotify Origin 校验（`allowedorigins` 修法）。*
