@@ -55,6 +55,8 @@ _CFG_DEFAULTS = {
     "gotify_url_local": "",    # 桥连 Gotify 的本地地址，【覆盖】gotify_url。同机填 https://127.0.0.1:端口（自动 skip-verify、免 hairpin）；空 → 用 gotify_url
     "tls_cert_file": "",       # 填了 → /register 走 https（公网上报 push token 必须）；空 → 明文 http
     "tls_key_file": "",        # 与 tls_cert_file 配对；与 Gotify 共用同一张域名证书（acme.sh/certbot 的 PEM）
+    # —— 订阅类字样标注（华为 Push Kit"订阅"类消息分类要求携带订阅类字样，见 push-apply-right）——
+    "subscribe_label": "true", # 是否给转发标题加"订阅:"前缀。true=加；false=不加。仅桥端配置（不入 App）。
 }
 _cfg = dict(_CFG_DEFAULTS)     # 运行时配置；init_config 填，RegisterHandler 改动态项，keep_subscribed 读
 
@@ -151,10 +153,12 @@ def _seed_config_file():
 
 # ──────────────────────── 华为服务账号 + 推送 ────────────────────────
 SERVICE_ACCOUNT_FILE = "private.json"   # AGC 项目设置→常规→服务账号 下载
-NOTIFY_CATEGORY = "ACCOUNT"             # 须与申到的自分类权益类目一致
+NOTIFY_CATEGORY = "SUBSCRIPTION"   # 通知消息分类 category，须与已开通的自分类权益类目一致。
+                              # 订阅类(SUBSCRIPTION)自分类权益 2026-07-02 已审核通过（华为要求配置 category=SUBSCRIPTION；未开通权益时携带该 category 值会归资讯营销）。
 TEST_MESSAGE    = True                  # 调测期绕频控；正式改 False
 
 PUSH_TOKENS_FILE = "push_tokens.json"
+SUBSCRIBE_STATUS_FILE = "subscribe_status.json"  # {device_id: bool}，App /register 上报的订阅状态（订阅总开关）
 REGISTER_PORT    = 25238     # /register 监听端口（桥内部默认值；要改改这行，不入配置文件）
 
 PUSH_URL  = "https://push-api.cloud.huawei.com/v3/{project_id}/messages:send"
@@ -217,6 +221,20 @@ def save_tokens(d):
         json.dump(d, f, ensure_ascii=False, indent=2)
 
 
+def load_subscribe_status() -> dict:
+    """{device_id: bool}，App 上报的订阅状态。未记录的设备默认订阅（不破坏老设备 / 首装未上报的）。"""
+    try:
+        with open(SUBSCRIBE_STATUS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
+
+def save_subscribe_status(d):
+    with open(SUBSCRIBE_STATUS_FILE, "w", encoding="utf-8") as f:
+        json.dump(d, f, ensure_ascii=False, indent=2)
+
+
 class RegisterHandler(BaseHTTPRequestHandler):
     """App 上报：POST /register
     body = {client, token:<push_token>(可选), gotify_url, gotify_token}。
@@ -245,6 +263,16 @@ class RegisterHandler(BaseHTTPRequestHandler):
             tokens[client] = push_token
             save_tokens(tokens)
             print(f"[注册] {client} push token -> {push_token[:12]}... ({'已登记/刷新' if device_known else '新设备'})")
+
+        # 订阅状态（订阅总开关）：每次都写（像 push_token，【不锁定】——首注锁定只管 gotify，
+        # subscribed 走 push_token 同款"每次刷新"路径，故反复订阅/取消都生效，不触发忽略）。
+        # App 端默认 false（华为要求"订阅按钮默认关闭"）；未上报的设备 send_to_huawei 视为订阅（不破坏老设备）。
+        subscribed = payload.get("subscribed")
+        if subscribed is not None:
+            status = load_subscribe_status()
+            status[client] = bool(subscribed)
+            save_subscribe_status(status)
+            print(f"[注册] {client} subscribed={'订阅' if subscribed else '已取消'}")
 
         # 2) gotify 配置：first-set wins，之后锁（防公网抢首注改后端）。
         gurl = normalize_gotify_addr(payload.get("gotify_url") or "")
@@ -313,6 +341,15 @@ def send_to_huawei(title, message, priority=4, extras=None, appid=0):
     if not devs:
         print("[PushKit] 还没注册设备，跳过"); return
 
+    # 订阅类字样标注：华为 Push Kit 通知消息分类要求"订阅"类(SUBSCRIPTION)消息在标题或正文
+    # 携带"订阅/预约/关注"等字样（见 push-apply-right#订阅流程要点）。subscribe_label=true 时
+    # 给消息加"订阅:"前缀以符合该分类标注要求；false=不加。格式：title 有→加标题前；title 空→加 body 开头。
+    if _cfg.get("subscribe_label", "true").lower() in ("true", "1", "yes", "on"):
+        if title:
+            title = f"订阅:{title}"
+        else:
+            message = f"订阅:{message or ''}".strip()
+
     notification = {
         "category": NOTIFY_CATEGORY,
         "title": title or "Hotify",
@@ -329,8 +366,13 @@ def send_to_huawei(title, message, priority=4, extras=None, appid=0):
     #   鉴权 802x、权益 80300002、消息超长 80300008、频控、系统错 81xxxxx 都跟 token 死活无关——误删会丢好 token
     #   （鉴权闪一下全台端最惨）。码来自华为官方码表，不拍脑袋。详见 CHANGELOG。
     DEAD_TOKEN_CODES = {"80100000", "80300007"}
+    # 订阅状态过滤：subscribed=false 的设备跳过（用户在 App 取消了订阅）。
+    # 未记录的设备默认订阅（get(dev_id, True)），不破坏老设备 / 首装还没上报订阅状态的。
+    sub_status = load_subscribe_status()
     delivered, dead = 0, []
     for dev_id, tok in list(devs.items()):
+        if not sub_status.get(dev_id, True):    # False = 用户取消订阅 → 跳过该设备（不推、不计数、不清 token）
+            continue
         payload = {
             "target": {"token": [tok]},
             "payload": {

@@ -18,3 +18,7 @@ tls_cert_file:
 
 # TLS 私钥【文件路径】，与 tls_cert_file 配对。与 Gotify 共用同一张域名证书。
 tls_key_file:
+
+# 订阅类字样标注开关。华为 Push Kit 通知消息分类要求"订阅"类消息携带"订阅"等字样（见 push-apply-right）。
+# true（默认）= 转发时给标题加"订阅:"前缀（如"订阅:短信验证码"）；false = 不加前缀。
+subscribe_label: true

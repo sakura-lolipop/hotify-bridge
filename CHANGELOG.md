@@ -13,8 +13,11 @@
 - **首次启动自动建配置**：没有 `bridge_config.yaml` 时，自动从 `bridge_config.example.yaml` 复制一份（带注释），部署者直接改。
 - **双语 README**：默认中文（`README.md`），英文版 `README.en.md`，顶部互相链接。
 - **`/register` 响应字段**：返 `device_known`（UUID 是否已登记过）/ `gotify_set`（本次是否首注成功）/ `ignored_gotify`（桥已配置、本次 gotify 被忽略），App 据此给反馈。
+- **订阅类字样标注**：转发时给标题加 `订阅:` 前缀（符合华为 Push Kit"订阅"类消息分类的标注要求，见 push-apply-right；如 `订阅:短信验证码`）。新配置 `subscribe_label`（默认 `true`=标注；`false`=不标注）。
+- **订阅总开关（per-device 订阅/取消）**：`/register` 收 `subscribed` 字段，按设备存 `subscribe_status.json`；转发时 `subscribed=false` 的设备跳过不推（未记录默认订阅，不破坏老设备）。`subscribed` 走 push_token 同款"每次刷新、不锁定"路径（首注锁定只管 gotify），反复订阅/取消都生效。配合 App 端订阅开关，符合华为"订阅"类消息订阅/取消订阅流程。
 
 ### Changed
+- **`NOTIFY_CATEGORY` 改 `SUBSCRIPTION`**：订阅类(SUBSCRIPTION)自分类权益审核通过后，与已开通类目保持一致（华为要求配置 category=SUBSCRIPTION）。之前 `ACCOUNT` 为未开通时的占位（携带未开通权益的 category 会归资讯营销）。
 - **配置格式：JSON/YAML → 宽松文本**。每行 `键: 值`，值是冒号后的整段——反斜杠、冒号、冒号后无空格、引号不配对全容错。**去掉 pyyaml 依赖**（deps 回到 `websockets PyJWT cryptography`）。
 - **App 上报持久化改成定点更新**：只替换 `gotify_url` / `gotify_token` 两行，其余（静态项 + `#` 注释）原样保留——不再整文件重写丢注释。
 - **日志口语化 + 「桥」→「Hotify 推送服务」统一**：「高水位初始化」→「从最新消息开始只推新消息」、「首注 Gotify 已锁定」→「首次收到 App 的 Gotify 配置」、`[桥]` 标签 → `[Hotify 推送服务]` 等，去掉开发术语。README/BRIDGE 加术语映射（桥 = Hotify 推送服务）。
