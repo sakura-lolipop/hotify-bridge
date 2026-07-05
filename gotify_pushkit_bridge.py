@@ -31,8 +31,6 @@ import threading
 import urllib.request
 import urllib.parse
 import urllib.error
-from http.server import BaseHTTPRequestHandler, HTTPServer
-
 import websockets
 import jwt as pyjwt  # PyJWT；PS256 签名需 cryptography
 
@@ -58,7 +56,8 @@ _CFG_DEFAULTS = {
     # —— 订阅类字样标注（华为 Push Kit"订阅"类消息分类要求携带订阅类字样，见 push-apply-right）——
     "subscribe_label": "true", # 是否给转发标题加"订阅:"前缀。true=加；false=不加。仅桥端配置（不入 App）。
 }
-_cfg = dict(_CFG_DEFAULTS)     # 运行时配置；init_config 填，RegisterHandler 改动态项，keep_subscribed 读
+_cfg = dict(_CFG_DEFAULTS)     # 运行时配置；init_config 填，_process_register 改动态项，keep_subscribed 读
+_file_lock = threading.Lock()   # 文件读写锁：register（async loop）+ 推送（to_thread）跨线程读写 tokens/subscribe_status/bridge_config，全量 load/save 并发要锁防半写
 
 
 def load_bridge_config() -> dict:
@@ -87,26 +86,27 @@ def load_bridge_config() -> dict:
 def save_bridge_config():
     """App 上报 gotify 后持久化：只替换 gotify_url / gotify_token 两行的值，其余（静态项 + # 注释）
     原样保留——不整文件重写，避免丢注释、避免"动"踩"静"。"""
-    try:
-        with open(BRIDGE_CONFIG_FILE, encoding="utf-8") as f:
-            lines = f.readlines()
-    except FileNotFoundError:
-        lines = []
-    out, wrote_url, wrote_tok = [], False, False
-    for line in lines:
-        key = line.lstrip()
-        if key.startswith("gotify_url:"):
-            out.append(f'gotify_url: {_cfg["gotify_url"]}\n'); wrote_url = True
-        elif key.startswith("gotify_token:"):
-            out.append(f'gotify_token: {_cfg["gotify_token"]}\n'); wrote_tok = True
-        else:
-            out.append(line)
-    if not wrote_url:                                   # 文件里没这两行（罕见）→ 追加
-        out.append(f'gotify_url: {_cfg["gotify_url"]}\n')
-    if not wrote_tok:
-        out.append(f'gotify_token: {_cfg["gotify_token"]}\n')
-    with open(BRIDGE_CONFIG_FILE, "w", encoding="utf-8") as f:
-        f.writelines(out)
+    with _file_lock:
+        try:
+            with open(BRIDGE_CONFIG_FILE, encoding="utf-8") as f:
+                lines = f.readlines()
+        except FileNotFoundError:
+            lines = []
+        out, wrote_url, wrote_tok = [], False, False
+        for line in lines:
+            key = line.lstrip()
+            if key.startswith("gotify_url:"):
+                out.append(f'gotify_url: {_cfg["gotify_url"]}\n'); wrote_url = True
+            elif key.startswith("gotify_token:"):
+                out.append(f'gotify_token: {_cfg["gotify_token"]}\n'); wrote_tok = True
+            else:
+                out.append(line)
+        if not wrote_url:                                   # 文件里没这两行（罕见）→ 追加
+            out.append(f'gotify_url: {_cfg["gotify_url"]}\n')
+        if not wrote_tok:
+            out.append(f'gotify_token: {_cfg["gotify_token"]}\n')
+        with open(BRIDGE_CONFIG_FILE, "w", encoding="utf-8") as f:
+            f.writelines(out)
 
 
 def normalize_gotify_addr(raw: str) -> str:
@@ -209,118 +209,172 @@ def get_bearer_token() -> str:
 # ──────────────────────────── 设备 token 注册表 + App 配置上报 ────────────────────────────
 
 def load_tokens():
-    try:
-        with open(PUSH_TOKENS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {}
+    with _file_lock:
+        try:
+            with open(PUSH_TOKENS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return {}
 
 
 def save_tokens(d):
-    with open(PUSH_TOKENS_FILE, "w", encoding="utf-8") as f:
-        json.dump(d, f, ensure_ascii=False, indent=2)
+    with _file_lock:
+        with open(PUSH_TOKENS_FILE, "w", encoding="utf-8") as f:
+            json.dump(d, f, ensure_ascii=False, indent=2)
 
 
 def load_subscribe_status() -> dict:
     """{device_id: bool}，App 上报的订阅状态。未记录的设备默认订阅（不破坏老设备 / 首装未上报的）。"""
-    try:
-        with open(SUBSCRIBE_STATUS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {}
+    with _file_lock:
+        try:
+            with open(SUBSCRIBE_STATUS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return {}
 
 
 def save_subscribe_status(d):
-    with open(SUBSCRIBE_STATUS_FILE, "w", encoding="utf-8") as f:
-        json.dump(d, f, ensure_ascii=False, indent=2)
+    with _file_lock:
+        with open(SUBSCRIBE_STATUS_FILE, "w", encoding="utf-8") as f:
+            json.dump(d, f, ensure_ascii=False, indent=2)
 
 
-class RegisterHandler(BaseHTTPRequestHandler):
-    """App 上报：POST /register
-    body = {client, token:<push_token>(可选), gotify_url, gotify_token}。
+def _process_register(payload: dict) -> dict:
+    """POST /register 处理逻辑（同步文件 IO + _cfg 改）。原 RegisterHandler.do_POST 的处理部分，
+    抽出来供 async handle_register 在 loop 里直接调（文件 IO ms 级，阻塞 loop 可接受；register 低频）。
+    返回响应 dict（JSON body）。
     模型 = first-set wins（照 SSH 主机指纹 TOFU + bark 式 device key）：
       · push token：每次都注册/刷新（token 会变，桥要最新的；返 device_known=是否之前已登记过）。
       · gotify 配置：桥【未配置】才收 App 上报（App 已先 check 验过）→ 写回 yaml 持久化 = 锁定；
         桥【已配置】后 App 再发的 gotify 一律【忽略】——防公网攻击者抢首注把后端改成他的 Gotify。
-        要零赛跑：在 yaml 预填 gotify，桥启动即"已配置"，/register 永不收首注。
-    响应 {ok, device_known, gotify_set, ignored_gotify}——App 据此给反馈。"""
-    def do_POST(self):
-        if self.path != "/register":
-            self.send_response(404); self.end_headers(); return
-        length = int(self.headers.get("Content-Length", 0))
+        要零赛跑：在 yaml 预填 gotify，桥启动即"已配置"，/register 永不收首注。"""
+    client = payload.get("client", "default")
+    push_token = payload.get("token") or payload.get("push_token")
+
+    # 1) 华为 push token：每次都写（token 会刷新；无 agconnect 时为空 → 跳过）。
+    device_known = False
+    if push_token:
+        tokens = load_tokens()
+        device_known = client in tokens          # 这个 UUID 之前是否已登记过（反馈用：新设备 vs 已注册过）
+        tokens[client] = push_token
+        save_tokens(tokens)
+        print(f"[注册] {client} push token -> {push_token[:12]}... ({'已登记/刷新' if device_known else '新设备'})")
+
+    # 订阅状态（订阅总开关）：每次都写（像 push_token，【不锁定】——首注锁定只管 gotify，
+    # subscribed 走 push_token 同款"每次刷新"路径，故反复订阅/取消都生效，不触发忽略）。
+    # App 端默认 false（华为要求"订阅按钮默认关闭"）；未上报的设备 send_to_huawei 视为订阅（不破坏老设备）。
+    subscribed = payload.get("subscribed")
+    if subscribed is not None:
+        status = load_subscribe_status()
+        status[client] = bool(subscribed)
+        save_subscribe_status(status)
+        print(f"[注册] {client} subscribed={'订阅' if subscribed else '已取消'}")
+
+    # 2) gotify 配置：first-set wins，之后锁（防公网抢首注改后端）。
+    gurl = normalize_gotify_addr(payload.get("gotify_url") or "")
+    gtok = payload.get("gotify_token") or ""
+    already = bool(_cfg.get("gotify_url") and _cfg.get("gotify_token"))   # 桥已配置（yaml 预填 或 之前首注过）
+    gotify_set = False
+    ignored_gotify = False
+    if not already:
+        if gurl and gtok:                          # App 带了已验过的 gotify → 首注 + 锁定
+            _cfg["gotify_url"] = gurl
+            _cfg["gotify_token"] = gtok
+            save_bridge_config()                   # 写回 yaml 持久化 → 重启不丢 = 锁定
+            gotify_set = True
+            print(f"[注册] 首次收到 App 的 Gotify 配置，已保存：url={_cfg['gotify_url']} token=***已设置***")
+            # _autodetect 异步（后台线程，不阻塞 200 响应；旧同步 ~9s 会卡 HAP 8s connectTimeout）
+            threading.Thread(target=_autodetect_local_gotify, daemon=True).start()
+        # App 没带 gotify（纯 token 刷新）→ 桥仍 waiting，不动配置
+    else:
+        if gurl or gtok:                            # 桥已配置 → App 的 gotify 一律忽略（防改后端）
+            ignored_gotify = True
+            print(f"[注册] Hotify 推送服务配置已存在，本次忽略。需要修改 Gotify 配置：手动修改 bridge_config.yaml 后重启 Hotify 推送服务")
+
+    if not (push_token or gotify_set or ignored_gotify):
+        print(f"[注册] {client} 上报为空（无 token 无配置）")
+
+    return {"ok": True, "device_known": device_known, "gotify_set": gotify_set, "ignored_gotify": ignored_gotify}
+
+
+def _send_http_response(writer: asyncio.StreamWriter, code: int, body: str) -> None:
+    """写 HTTP/1.1 响应（手写 status line + headers + body 到 StreamWriter）。
+    手写是因为 asyncio.start_server 不带 HTTP 解析（和 BaseHTTPRequestHandler 不同），自己拼最轻量。"""
+    reason = {200: "OK", 400: "Bad Request", 404: "Not Found", 500: "Internal Server Error"}.get(code, "OK")
+    body_bytes = body.encode("utf-8")
+    head = (
+        f"HTTP/1.1 {code} {reason}\r\n"
+        "Content-Type: application/json\r\n"
+        f"Content-Length: {len(body_bytes)}\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+    )
+    writer.write(head.encode("utf-8") + body_bytes)
+
+
+async def handle_register(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    """async register handler（asyncio.start_server 回调）。
+    手动解析 HTTP POST /register + body JSON，调 _process_register，写响应。
+    单 loop async 并发——无 race（_process_register 在 loop 直接跑，文件 IO ms 级不阻塞 loop 久）；
+    客户端断开（HAP 8s 超时）→ IncompleteReadError 吞掉，writer.close 不 BrokenPipe（async 自动）。
+    这根治了旧 HTTPServer 单线程 + accept backlog 满 + fd 泄漏的死锁：每连接独立协程，互不阻塞。"""
+    try:
+        # 读 request line + headers（到 \r\n\r\n）
+        head = await reader.readuntil(b"\r\n\r\n")
+        head_str = head.decode("utf-8", errors="replace")
+        lines = head_str.split("\r\n")
+        request_line = lines[0] if lines else ""
+        if "POST" not in request_line.upper() or "/register" not in request_line:
+            _send_http_response(writer, 404, '{"ok":false}')
+            return
+        # 解析 Content-Length
+        content_length = 0
+        for line in lines[1:]:
+            if line.lower().startswith("content-length:"):
+                try:
+                    content_length = int(line.split(":", 1)[1].strip())
+                except ValueError:
+                    pass
+                break
+        # 读 body
+        body_bytes = await reader.readexactly(content_length) if content_length > 0 else b"{}"
         try:
-            payload = json.loads(self.rfile.read(length) or b"{}")
+            payload = json.loads(body_bytes or b"{}")
         except json.JSONDecodeError:
-            self.send_response(400); self.end_headers(); return
-        client = payload.get("client", "default")
-        push_token = payload.get("token") or payload.get("push_token")
-
-        # 1) 华为 push token：每次都写（token 会刷新；无 agconnect 时为空 → 跳过）。
-        device_known = False
-        if push_token:
-            tokens = load_tokens()
-            device_known = client in tokens          # 这个 UUID 之前是否已登记过（反馈用：新设备 vs 已注册过）
-            tokens[client] = push_token
-            save_tokens(tokens)
-            print(f"[注册] {client} push token -> {push_token[:12]}... ({'已登记/刷新' if device_known else '新设备'})")
-
-        # 订阅状态（订阅总开关）：每次都写（像 push_token，【不锁定】——首注锁定只管 gotify，
-        # subscribed 走 push_token 同款"每次刷新"路径，故反复订阅/取消都生效，不触发忽略）。
-        # App 端默认 false（华为要求"订阅按钮默认关闭"）；未上报的设备 send_to_huawei 视为订阅（不破坏老设备）。
-        subscribed = payload.get("subscribed")
-        if subscribed is not None:
-            status = load_subscribe_status()
-            status[client] = bool(subscribed)
-            save_subscribe_status(status)
-            print(f"[注册] {client} subscribed={'订阅' if subscribed else '已取消'}")
-
-        # 2) gotify 配置：first-set wins，之后锁（防公网抢首注改后端）。
-        gurl = normalize_gotify_addr(payload.get("gotify_url") or "")
-        gtok = payload.get("gotify_token") or ""
-        already = bool(_cfg.get("gotify_url") and _cfg.get("gotify_token"))   # 桥已配置（yaml 预填 或 之前首注过）
-        gotify_set = False
-        ignored_gotify = False
-        if not already:
-            if gurl and gtok:                          # App 带了已验过的 gotify → 首注 + 锁定
-                _cfg["gotify_url"] = gurl
-                _cfg["gotify_token"] = gtok
-                save_bridge_config()                   # 写回 yaml 持久化 → 重启不丢 = 锁定
-                _autodetect_local_gotify()
-                gotify_set = True
-                print(f"[注册] 首次收到 App 的 Gotify 配置，已保存：url={_cfg['gotify_url']} token=***已设置***")
-            # App 没带 gotify（纯 token 刷新）→ 桥仍 waiting，不动配置
-        else:
-            if gurl or gtok:                            # 桥已配置 → App 的 gotify 一律忽略（防改后端）
-                ignored_gotify = True
-                print(f"[注册] Hotify 推送服务配置已存在，本次忽略。需要修改 Gotify 配置：手动修改 bridge_config.yaml 后重启 Hotify 推送服务")
-
-        if not (push_token or gotify_set or ignored_gotify):
-            print(f"[注册] {client} 上报为空（无 token 无配置）")
-
-        # 响应：App 据此给反馈（device_known=新/已登记，gotify_set=首注成功，ignored_gotify=桥已配置被忽略）
-        body = json.dumps({"ok": True, "device_known": device_known,
-                           "gotify_set": gotify_set, "ignored_gotify": ignored_gotify})
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(body.encode("utf-8"))
-
-    def log_message(self, *args):
+            _send_http_response(writer, 400, '{"ok":false}')
+            return
+        # 处理（同步文件 IO ms 级，直接在 loop 跑；_autodetect 已异步，不卡）
+        result = _process_register(payload)
+        _send_http_response(writer, 200, json.dumps(result))
+    except asyncio.IncompleteReadError:
+        # 客户端断开（HAP 8s 超时）——吞掉，不 BrokenPipe（async writer.close 安全）
         pass
+    except Exception as e:
+        print(f"[注册] handler 异常: {e}")
+        try:
+            _send_http_response(writer, 500, '{"ok":false}')
+        except Exception:
+            pass
+    finally:
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except Exception:
+            pass
 
 
-def start_register_server():
-    """App 上报接口。tls_cert_file/tls_key_file 填了 → https；留空 → 明文 http（仅 LAN/调试）。
-    端口 = register_port（留空→默认 25238）。启动时对“用默认端口”和“降级 http”都显式 ⚠️ 告警。"""
+async def start_register_server() -> None:
+    """App 上报接口（asyncio.start_server，整合进主 loop）。
+    tls_cert_file/tls_key_file 填了 → https；留空 → 明文 http（仅 LAN/调试）。
+    端口 = register_port（留空→默认 25238）。"""
     port_cfg = _cfg.get("register_port")
     port = int(port_cfg or REGISTER_PORT)
     cert = _cfg["tls_cert_file"]
     key = _cfg["tls_key_file"]
-    httpd = HTTPServer(("0.0.0.0", port), RegisterHandler)
+    ssl_ctx = None
     if cert and key:
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        ctx.load_cert_chain(certfile=cert, keyfile=key)
-        httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+        ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ssl_ctx.load_cert_chain(certfile=cert, keyfile=key)
         print(f"[注册接口] 模式=HTTPS  https://0.0.0.0:{port}/register  （证书：{cert}）")
     else:
         print(f"[注册接口] 模式=HTTP  http://0.0.0.0:{port}/register")
@@ -328,7 +382,9 @@ def start_register_server():
               "公网上报 push token 会裸奔。仅 LAN/调试可接受；公网部署请配 TLS。")
     if not port_cfg:
         print(f"[注册接口] ⚠️ 用默认端口 {port}：register_port 留空 → 默认 {REGISTER_PORT}（要改请填 register_port）")
-    httpd.serve_forever()
+    server = await asyncio.start_server(handle_register, "0.0.0.0", port, ssl=ssl_ctx)
+    async with server:
+        await server.serve_forever()
 
 
 # ──────────────────────────── 推送到华为 (v3) ────────────────────────────
@@ -568,15 +624,25 @@ async def keep_subscribed():
 
 # ──────────────────────────── 入口 ────────────────────────────
 
+async def _main_async() -> None:
+    """主 loop：register server + keep_subscribed 并发（asyncio.gather，单 loop）。
+    register 不再独立 daemon 线程——和 Gotify 订阅同 loop，async 并发，无 race 无 GIL 争用。
+    旧架构（HTTPServer daemon 线程 + async 主线程）长跑后单线程阻塞 + accept backlog 满 + fd 泄漏致死锁；
+    新架构每 register 连接独立协程，互不阻塞，根治。"""
+    await asyncio.gather(
+        start_register_server(),
+        keep_subscribed(),
+    )
+
+
 if __name__ == "__main__":
-    init_config()           # 读持久化(App上报)/env；都没有则空 = waiting for app
+    init_config()           # 读持久化(App上报)/env + _autodetect；都没有则空 = waiting for app
     if _cfg["gotify_url"] and _cfg["gotify_token"]:
         print(f"[Hotify 推送服务] 已有 Gotify 配置：{_cfg['gotify_url']}")
     else:
         print("[Hotify 推送服务] 无 Gotify 配置，等待 App 上报（开 /register 等）")
     load_service_account()
-    threading.Thread(target=start_register_server, daemon=True).start()
     try:
-        asyncio.run(keep_subscribed())
+        asyncio.run(_main_async())
     except KeyboardInterrupt:
         print("\n退出。")

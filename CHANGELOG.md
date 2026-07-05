@@ -21,6 +21,7 @@
 - **配置格式：JSON/YAML → 宽松文本**。每行 `键: 值`，值是冒号后的整段——反斜杠、冒号、冒号后无空格、引号不配对全容错。**去掉 pyyaml 依赖**（deps 回到 `websockets PyJWT cryptography`）。
 - **App 上报持久化改成定点更新**：只替换 `gotify_url` / `gotify_token` 两行，其余（静态项 + `#` 注释）原样保留——不再整文件重写丢注释。
 - **日志口语化 + 「桥」→「Hotify 推送服务」统一**：「高水位初始化」→「从最新消息开始只推新消息」、「首注 Gotify 已锁定」→「首次收到 App 的 Gotify 配置」、`[桥]` 标签 → `[Hotify 推送服务]` 等，去掉开发术语。README/BRIDGE 加术语映射（桥 = Hotify 推送服务）。
+- **register server 重构：HTTPServer（同步单线程）→ asyncio.start_server（async，整合主 loop）**：根治长跑后收不到上报。旧架构 register 在独立 daemon 线程跑 HTTPServer（单线程、accept backlog 默认 5、连接异常可能 fd 泄漏），任一偶发慢（磁盘 IO 抖动 / GC / 首注 `_autodetect_local_gotify` 同步探同机 Gotify ~9s）→ do_POST >8s → HAP `connectTimeout:8000` 超时断开 → HAP 多调用点 + 重试短时多次连 → backlog 满 OS 丢连接 → 桥 `accept` 不到 → **收不到上报**（正反馈自维持，重启才行）。推送不受影响（keep_subscribed 在主线程 async loop，独立 websockets + urllib，不碰 25238）。新架构 register 搬进主 async loop（`asyncio.gather(register, keep_subscribed)`），每连接独立协程互不阻塞，无单线程瓶颈 / backlog 满 / fd 泄漏。配套：文件读写加 `_file_lock`（防 async loop + to_thread 跨线程 race 半写）、`_autodetect` 首注改后台线程（不阻塞 200 响应）。
 
 ### Fixed
 - Windows 反斜杠路径（`C:\Users\...`）在双引号 YAML 里被当 `\U` 转义、整个配置解析失败 → 改宽松解析器，反斜杠原样、不再炸。
@@ -28,7 +29,11 @@
 - **失效 token 清理不再误删好 token**：旧逻辑"非成功码 / HTTPError 一律删"，会把与 token 死活无关的错（鉴权失败 802x、权益未开 80300002、消息超长 80300008、系统错 81xxxxx）也当死 token 删——鉴权闪一下能把全量 token 一锅端。改为：① **白名单删除**，仅 `80100000`（illegal_tokens）/ `80300007`（所有 token 无效）两码才删（据华为官方码表钉死，≈ APNs `Unregistered`）；② **HTTPError 改为保留**；③ **全局闸门**——本轮 0 台成功（疑系统性故障）则一台都不删，防 app 包名配错时全台返 `80300007` 被误触发全锅端。其余码一律保留 + 日志。
 
 ### Security
-- **`/register` 防公网抢首注改后端**：gotify 配置首次 App 上报后**锁定**（写回 yaml 持久化），之后再报一律**忽略**——堵住"公网攻击者抢先 `POST /register`、把桥的后端改成自己的 Gotify、借你的配额推垃圾通知"。要零赛跑可在 `bridge_config.yaml` 预填 gotify（桥启动即锁）。详见 `gotify_pushkit_bridge.py` `RegisterHandler`。
+- **`/register` 防公网抢首注改后端**：gotify 配置首次 App 上报后**锁定**（写回 yaml 持久化），之后再报一律**忽略**——堵住"公网攻击者抢先 `POST /register`、把桥的后端改成自己的 Gotify、借你的配额推垃圾通知"。要零赛跑可在 `bridge_config.yaml` 预填 gotify（桥启动即锁）。详见 `gotify_pushkit_bridge.py` `_process_register`。
+
+### ⏳ 待测（register server 重构后验证）
+- **长跑后是否还卡死**：async 多协程，预期不再单线程阻塞 / backlog 满。需远程跑数小时 + 反复 register 验（旧 bug 长跑后才现，新代码待同条件压测确认根治）。
+- **是否引入新 bug**：async handler 手动 HTTP 解析（request line / Content-Length / body）/ `_file_lock` 是否死锁 / `_autodetect` 后台线程——首次部署需验 register 全流程（HAP 点对勾 → 200 + push token 写入 + 订阅开关工作）+ 推送照常 + TLS 模式（若配证书，验 `asyncio.start_server` 的 `ssl=` 参数生效）。
 
 ---
 
