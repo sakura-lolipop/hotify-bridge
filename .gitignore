@@ -14,6 +14,11 @@ __pycache__/
 .venv/
 venv/
 
+# === PyInstaller 构建产物（本地打包用；CI 在 runner 里打、产物不落本地）===
+build/
+dist/
+*.spec
+
 # === 本地自测 Gotify 实例数据 ===
 test_local/data/
 

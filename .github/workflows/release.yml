@@ -1,0 +1,50 @@
+name: Build & Release
+
+# 打 tag (v*) → ubuntu/windows/macos 3 runner 各跑 PyInstaller 打自包含二进制 → 塞进 GitHub Release。
+#   用户下对应平台的包即可跑，免装 Python / websockets。
+# workflow_dispatch（Actions 页手动触发）→ 只构建 + 上传 artifact，不发 Release（先测构建通不通）。
+# 桥自举：二进制首次跑会自动生成 bridge_config.yaml 模板（部署者填 gotify_token），cloud_function_urls 从 GitHub raw fetch。
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write   # 建 Release + 上传附件需要
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false   # 一个 OS 挂了别连累另外两个
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: hotify-bridge-linux-x86_64
+          - os: windows-latest
+            name: hotify-bridge-windows-x86_64     # PyInstaller 在 Windows 自动加 .exe
+          - os: macos-latest
+            name: hotify-bridge-macos-arm64         # macos-latest = Apple Silicon (arm64)；Intel mac 要另加 macos-13
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: pip install pyinstaller websockets
+      - name: Build (PyInstaller onefile)
+        run: pyinstaller --onefile --clean --name "${{ matrix.name }}" gotify_pushkit_bridge.py
+      - name: Upload artifact（手动触发测试用，Actions 页可下）
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/${{ matrix.name }}*
+      - name: Attach to Release（打 tag 触发）
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/${{ matrix.name }}*
+          generate_release_notes: true   # 自动从 commit/PR 生成发版说明，可后续在网页改
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
