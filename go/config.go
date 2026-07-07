@@ -258,7 +258,10 @@ func initConfig() {
 	}
 	cfg.GotifyToken = gt
 	cfg.GotifyURLLocal = normalizeGotifyAddr(getString(p, "gotify_url_local"))
-	// TODO CP4：probeGotifyConfig()（探证书+端口 hint）/ autodetectLocalGotify()（探同机 Gotify）/ fetchCfURLsFromTxt()（空时 fetch .txt）
+	// 0-config 自动探测（CP4）
+	probeGotifyConfig()      // 探 Gotify config.yml → 自动证书 + 端口 hint
+	autodetectLocalGotify()  // 留空则探同机 Gotify（/version probe）
+	fetchCfURLsFromTxt()     // cloud_function_urls 空 → fetch .txt（ghproxy 优先 → 直连 → 缓存）
 }
 
 // applyParsedConfig — 用解析出的 map 覆盖 cfg 静态项（对应 Python _cfg.update(p) 的静态部分）。

@@ -151,7 +151,7 @@ func processRegister(payload map[string]any) registerResponse {
 			saveBridgeConfig() // 持久化先于 200（crash-safe：save 后 crash → 重启已锁，App 重试得 ignored_gotify）
 			resp.GotifySet = true
 			log.Printf("[注册] 首次收到 App 的 Gotify 配置，已保存：url=%s token=***已设置***", gurl)
-			// TODO CP4: go autodetectLocalGotify()（后台探同机 Gotify ~9s，不阻塞 200——HAP 8s connectTimeout）
+			go autodetectLocalGotify() // 后台探同机 Gotify ~9s，不阻塞 200（HAP 8s connectTimeout）
 		}
 		// App 没带 gotify（纯 token 刷新）→ 桥仍 waiting，不动配置
 	} else {
