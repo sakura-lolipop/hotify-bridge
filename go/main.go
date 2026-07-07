@@ -41,12 +41,16 @@ func main() {
 	defer stop()
 
 	var wg sync.WaitGroup
-	wg.Add(1)
+	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		if err := startRegisterServer(ctx); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("register server: %v", err)
 		}
+	}()
+	go func() {
+		defer wg.Done()
+		keepSubscribed(ctx)
 	}()
 	wg.Wait()
 }
