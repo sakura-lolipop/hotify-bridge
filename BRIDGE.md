@@ -4,6 +4,22 @@
 > 架构/进度见 `task.md`，桥源码见 `gotify_pushkit_bridge.py`。
 > 📌 **术语**：本文档的「桥」= App「设置」里的「Hotify 推送服务」（可选字段），同一个东西。
 
+## Go 版（推荐）vs Python（fallback）
+
+桥有**两套实现**，配置/文件/线契约完全通用（App/云函数/Gotify 察觉不到换语言）：
+
+| | Go（推荐） | Python（fallback） |
+|---|---|---|
+| 源码 | `go/` 子目录（`main.go`+`config.go`+`server.go`+`subscriber.go`+`push.go`+`autodetect.go`） | `gotify_pushkit_bridge.py`（repo 根） |
+| 构建 | `cd hotify-bridge/go && go build -o gotify-bridge.exe .`（单二进制，免运行时） | 无（解释执行） |
+| 依赖 | `github.com/gorilla/websocket`（go.mod 管） | `pip install websockets` |
+| 运行 | `cd <部署目录> && ./gotify-bridge.exe` | `python -u gotify_pushkit_bridge.py` |
+| 配置/文件 | 同 Python（`bridge_config.yaml`/`push_tokens.json`/`subscribe_status.json` 通用，宽松解析器复刻） | 同左 |
+
+**Go 版优势**：单二进制部署（免 Python 装机）、`net/http` stdlib 取代手搓 HTTP 解析、goroutine 取代 asyncio+to_thread。**线兼容已验**：/register 10 payload Go-vs-Python 全对齐；WS Origin 缺席（Gotify 不 403）；ts 不透明透传（点通知→App 滚到 msg）。
+
+> Windows Defender 可能误杀新编的 `gotify-bridge.exe`（绑端口+起服务触发启发式）→ 加排除项：`Add-MpPreference -ExclusionPath "<hotify-bridge/go 绝对路径>"`（admin PowerShell）。
+
 ## 它干什么
 ```
 副机 SmsForwarder ─▶ Gotify(存/流) ─▶ 【本桥】─▶ 华为 Push Kit v3 ─▶ 鸿蒙锁屏
