@@ -519,7 +519,7 @@ async def start_register_server() -> None:
               "公网上报 push token 会裸奔。仅 LAN/调试可接受；公网部署请配 TLS。")
     if not port_cfg:
         print(f"[注册接口] ⚠️ 用默认端口 {port}：register_port 留空 → 默认 {REGISTER_PORT}（要改请填 register_port）")
-    server = await asyncio.start_server(handle_register, "0.0.0.0", port, ssl=ssl)
+    server = await asyncio.start_server(handle_register, "0.0.0.0", port, ssl=ssl_ctx)
     async with server:
         await server.serve_forever()
 
