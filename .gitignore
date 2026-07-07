@@ -28,3 +28,9 @@ test_local/data/
 
 # === cloud_function_urls fetch 缓存（本地生成,不入库）===
 cloud_function_urls.cache.txt
+
+# === Go 构建产物（CP0 起，Go 桥在 go/ 子目录；源码 go.mod/*.go 入库）===
+go/gotify-bridge.exe
+go/gotify-bridge
+go/*.test
+go/*.out
