@@ -2,6 +2,24 @@
 
 桥（hotify-bridge）的 notable 变化。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/)。
 
+## [Go 桥重写] — 2026-07-08
+
+Python→Go 重写（CP0-CP5），`go/` 子目录（Python 留 repo 根作 fallback）。单 `main` 包 6 源文件 + 4 测试，唯一外部依赖 `gorilla/websocket`。配置/文件/线契约与 Python 完全通用（App/云函数/Gotify 察觉不到换语言）。
+
+### Added
+- **Go 桥（CP0-CP5）**：① `net/http` stdlib 取代 Python 手搓 HTTP 解析（删 `_send_http_response` + 手动 request-line/Content-Length 解析）；② goroutine + `sync`（Mutex/RWMutex/atomic.Int64）取代 asyncio + `to_thread`，高水位 `atomic.Int64` CAS 去重（live+回补共享单变量防重连双发）；③ `gotify_pushkit_bridge.py` 全功能 1:1 移植——/register（first-set-wins + `saveBridgeConfig` 持久化先于 200 + autodetect 后台 goroutine 不阻塞 HAP 8s）、订阅器（gorilla `Dialer.DialContext` 传空 `http.Header{}` **不发 Origin**、20s ping ticker、回补 100 条升序）、推送转发（`clickAction.data={ts}` 不透明字符串透传 + 云函数 fallback/重试 3 次 + 死 token 白名单 `{80100000,80300007}` + 全局闸门 `delivered==0` 不删）、0-config 自动探测（证书探 Gotify config/certs glob + 端口探 443→80→cfg→url + private-IP skip-verify + cf-txt ghproxy→直连→cache）。
+- **交叉编译 `go/build-all.sh`**：`CGO_ENABLED=0` 出 5 平台静态二进制（linux amd64/arm64、windows amd64、darwin amd64/arm64，各 6.4-7.1MB），`-trimpath -ldflags="-s -w"` 缩体积。纯 Go 无 cgo，免交叉工具链。
+- **mock 测试（4 文件）**：CP0 宽松解析器 + 文件往返；CP1 /register 10 payload Go-vs-Python parity（`jq -S` 全 MATCH）；CP2 WS Origin 缺席（killer）+ 高水位去重 + 回补；CP3 POST body（ts 透传/data 字符串/Auth 条件/notifyId omitempty/全局闸门/retry/fallback）；CP4 parseGotifyConfig/parseCfTxt/isPrivateIP。
+
+### Fixed
+- **Python `start_register_server` `ssl=ssl` → `ssl=ssl_ctx`（latent bug）**：传了 ssl **模块**（非 None）→ asyncio 当成开 SSL → 连进来调 `ssl.wrap_bio`（模块级，Python 3.12 已删）→ `AttributeError` 崩 /register。prod 跑 Python <3.12 没暴露（`ssl.wrap_bio` 模块级还在，将错就错）；升级 3.12+ 即崩。Go 重写 CP1 parity 测试（Python 3.13 环境）暴露此 bug，修后 10/10 对齐。
+
+### Changed
+- **BRIDGE.md 加「Go 版（推荐）vs Python（fallback）」章节**：源码/构建/依赖/运行/配置对比表 + Go 优势 + 线兼容已验 + Windows Defender 排除项提醒（新编 Go exe 可能被误杀）。
+- **真机验收（CP5）**：订阅远程 Gotify（`wss://push.smgwy.com:25234`）→ 收消息 → 推云函数 → Push Kit `80000000` → 手机收通知 → **点通知 App 滚到对应消息**（★ hazard 1 ts 端到端 killer 验过：ts 从 Gotify→桥→云函数→Push Kit→App `m.date===ts` 精确反查全程没坏）+ 干净 UTF-8 中文不坏。Go 桥线兼容端到端 VERIFIED。
+
+---
+
 ## [Unreleased] — 开发中（2026-06-29）
 
 ### Added
