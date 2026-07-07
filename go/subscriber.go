@@ -149,7 +149,7 @@ func forward(msg GotifyMessage, tag string) {
 			break // 抢到更新
 		}
 	}
-	// TODO CP3：sendToHuawei(msg.Title, msg.Message, msg.Priority, msg.Extras, ts=msg.Date, notifyID=msg.ID)
+	sendToHuawei(msg.Title, msg.Message, msg.Priority, msg.Extras, msg.Date, msg.ID)
 	log.Printf("[Gotify][%s] id=%d 已转发", tag, mid)
 }
 
