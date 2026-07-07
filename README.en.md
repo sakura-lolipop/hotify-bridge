@@ -24,22 +24,22 @@ This bridge is original Python code that talks to a [Gotify](https://github.com/
 ## 📋 Prerequisites
 - Python 3.8+
 - A running [Gotify](https://github.com/gotify/server) server (self-hosted)
-- A Huawei AGC project with **Push Kit** enabled + a **service account** key (`private.json`, RSA) — see [push-jwt-token](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/push-jwt-token)
-- Python deps: `pip install websockets PyJWT cryptography`
+- A push-service endpoint `cloud_function_urls`: default to the Hotify managed function (no setup needed); self-host see `CloudFuction/PushKit.md` (private lives in the cloud function, not the bridge)
+- Python deps: `pip install websockets`
 
 ## 🚀 Quick start
 ```bash
 git clone <this-repo> hotify-bridge && cd hotify-bridge
-pip install websockets PyJWT cryptography
+pip install websockets
 
 # 1) Gotify CLIENT token (reads messages / subscribes to /stream)
 #    Gotify WebUI → CLIENTS → Create Client → copy Token
 #    (NOT the app token — that's for SENDING only)
-# 2) Huawei service-account key → save as private.json
-#    Huawei Developer Console → your project → Service Account → create → download JSON
+# 2) Push-service endpoint cloud_function_urls: use the Hotify managed function (default) or your own
+#    (private lives in the cloud function, NOT the bridge — see repourl.md / CloudFuction/PushKit.md)
 
-cp bridge_config.example.yaml bridge_config.yaml   # then fill in YOUR values
-python -u gotify_pushkit_bridge.py
+python -u gotify_pushkit_bridge.py   # first run auto-generates bridge_config.yaml (defaults + comments, no example template)
+# → edit bridge_config.yaml: fill gotify_token + cloud_function_urls, restart
 ```
 
 ## ⚙️ Configuration
@@ -47,16 +47,16 @@ Gotify config is read in priority order: **app upload** (`POST /register`, persi
 
 | Where | Keys | Notes |
 |---|---|---|
-| `bridge_config.yaml` | `gotify_url`, `gotify_token` (dynamic, app-uploaded) **+** `gotify_url_local`, `register_port`, `tls_cert_file`, `tls_key_file` (static, deployer-edited) | Copy from `.example`. **gitignored — never commit your real token.** `register_port` empty → default 25238; `tls_*` empty → `/register` is plain HTTP. |
+| `bridge_config.yaml` | `gotify_url`, `gotify_token` (dynamic, app-uploaded) **+** `gotify_url_local`, `register_port`, `tls_*` (static) **+** `cloud_function_urls`, `cloud_function_token` (push-service endpoint) | Auto-generated on first run (no example template). **gitignored — never commit your real token.** `register_port` empty → default 25238; `tls_*` empty → `/register` is plain HTTP; `cloud_function_urls` empty → push skipped (Gotify subscribe only). |
 | Env | `GOTIFY_HTTP_URL`, `GOTIFY_CLIENT_TOKEN` | Headless fallback for the dynamic gotify fields only |
-| `private.json` | Huawei service account (RSA key) | AGC download. **gitignored.** Missing = "spine mode" (subscribes, skips Push Kit). |
+| (private moved out of bridge) | — | private lives in the **cloud function** (Netlify), not the bridge → bridge is open-sourceable. See `repourl.md` / `CloudFuction/PushKit.md`. |
 | `push_tokens.json` | device push tokens | Auto-managed from app uploads. gitignored. |
 
 **Gotify address smart mode**: enter just your Gotify port (a bare number) → bridge assumes Gotify is co-located and connects `http://127.0.0.1:<port>` (fastest, no TLS). Enter a full URL → remote Gotify (wss/https, needs a valid cert).
 
 ## 🔧 Two run modes
-- **Spine mode** (no `private.json`): subscribes to Gotify `/stream` + backfill work, but **skips Push Kit delivery** (logs `⏭ skip`). Use it to validate the Gotify link first.
-- **Full mode** (with `private.json`): end-to-end → HarmonyOS lock screen.
+- **Subscribe-only mode** (`cloud_function_urls` not set): subscribes to Gotify `/stream` + backfill work, but **skips Push Kit delivery** (logs `⏭ skip`). Use it to validate the Gotify link first.
+- **Full mode** (`cloud_function_urls` set): end-to-end → HarmonyOS lock screen.
 
 ## 🚢 Production topology
 Put **Gotify + the bridge on one host**; both serve HTTPS with the **same cert** (each on its own port). The phone reaches each over HTTPS; the bridge reaches Gotify over HTTPS too — the cert validates because it's the same domain.

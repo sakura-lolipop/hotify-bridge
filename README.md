@@ -26,22 +26,22 @@
 ## 📋 前置
 - Python 3.8+
 - 一个运行中的 [Gotify](https://github.com/gotify/server) 服务端（自托管）
-- 一个开了 **Push Kit** 的华为 AGC 项目 + **服务账号**密钥（`private.json`，RSA）——见 [push-jwt-token](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/push-jwt-token)
-- Python 依赖：`pip install websockets PyJWT cryptography`
+- 推送服务入口 `cloud_function_urls`：默认用 Hotify 托管函数（无需自建）；自部署见 `CloudFuction/PushKit.md`（private 锁云函数、不入桥）
+- Python 依赖：`pip install websockets`
 
 ## 🚀 快速开始
 ```bash
 git clone <this-repo> hotify-bridge && cd hotify-bridge
-pip install websockets PyJWT cryptography
+pip install websockets
 
 # 1) Gotify CLIENT token（读消息 / 订阅 /stream）
 #    Gotify WebUI → CLIENTS → Create Client → 复制 Token
 #    （不是 app token——那个只能"发"消息）
-# 2) 华为服务账号密钥 → 存成 private.json
-#    华为开发者联盟 → 你的项目 → 服务账号 → 创建 → 下载 JSON
+# 2) 推送服务入口 cloud_function_urls：用 Hotify 托管函数（默认）或填自托管的
+#    （private 锁云函数、不入桥——见 repourl.md / CloudFuction/PushKit.md）
 
-cp bridge_config.example.yaml bridge_config.yaml   # 然后填入你的值
-python -u gotify_pushkit_bridge.py
+python -u gotify_pushkit_bridge.py   # 首启自动生成 bridge_config.yaml（默认值 + 注释，无 example 模板）
+# → 编辑 bridge_config.yaml：必填 gotify_token + cloud_function_urls，重启
 ```
 
 ## ⚙️ 配置
@@ -49,17 +49,17 @@ Gotify 配置 = **first-set wins**（照 SSH 主机指纹 TOFU）：桥【未配
 
 | 位置 | 键 | 说明 |
 |---|---|---|
-| `bridge_config.yaml` | `gotify_url`、`gotify_token`（**首次 App 上报锁定** / 或 yaml 预填）**+** `gotify_url_local`、`register_port`、`tls_cert_file`、`tls_key_file`（静态，部署者填） | 从 `.example` 复制。**gitignore——别提交真 token。** `register_port` 空 → 默认 25238；`tls_*` 空 → `/register` 走明文 http。 |
+| `bridge_config.yaml` | `gotify_url`、`gotify_token`（**首次 App 上报锁定** / 或 yaml 预填）**+** `gotify_url_local`、`register_port`、`tls_*`（静态）**+** `cloud_function_urls`、`cloud_function_token`（推送服务入口） | 首启自动生成（无 example 模板）。**gitignore——别提交真 token。** `register_port` 空 → 默认 25238；`tls_*` 空 → `/register` 走明文 http；`cloud_function_urls` 空 → 跳过推送（只订阅 Gotify）。 |
 | 环境变量 | `GOTIFY_HTTP_URL`、`GOTIFY_CLIENT_TOKEN` | 仅动态 gotify 字段的 headless 兜底 |
-| `private.json` | 华为服务账号（RSA 私钥） | AGC 下载。**gitignore。** 缺失 = "脊柱模式"（只订阅，跳过 Push Kit）。 |
+| （private 已移出桥） | — | private 锁在**云函数**（Netlify），桥不含 → 桥可开源。见 `repourl.md` / `CloudFuction/PushKit.md`。 |
 | `push_tokens.json` | 设备 push token | App 上报自动管理。gitignore。 |
 
 - **Gotify 地址智能模式**：`gotify_url` 只填端口（纯数字）→ 桥认为 Gotify 同机，连 `http://127.0.0.1:<端口>`（最快、免 TLS）。填完整地址 → 远程 Gotify（wss/https，需有效证书）。
 - **`gotify_url_local`（同机覆盖）**：桥和 Gotify 同机、但 App 上报的是域名时，在此填 `https://127.0.0.1:<端口>`，桥**用它连**（覆盖域名）+ 自动跳过证书校验，免 NAT hairpin。留空 → 桥用 `gotify_url`。
 
 ## 🔧 两种运行模式
-- **脊柱模式**（无 `private.json`）：订阅 Gotify `/stream` + 回补照常，但**跳过 Push Kit 投递**（日志 `⏭ skip`）。先验证 Gotify 链路用。
-- **完整模式**（有 `private.json`）：端到端 → 鸿蒙锁屏。
+- **只订阅模式**（`cloud_function_urls` 未配）：订阅 Gotify `/stream` + 回补照常，但**跳过 Push Kit 投递**（日志 `⏭ 跳过推送`）。先验证 Gotify 链路用。
+- **完整模式**（`cloud_function_urls` 配了）：端到端 → 鸿蒙锁屏。
 
 ## 🚢 生产拓扑
 把 **Gotify + 桥放一台主机**；各自 serve HTTPS，**共用同一张证书**（各自端口）。手机走 HTTPS 触达两者；桥也走 HTTPS 连 Gotify——同一域名，证书校验通过。

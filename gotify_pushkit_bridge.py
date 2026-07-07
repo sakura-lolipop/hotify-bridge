@@ -10,12 +10,14 @@ Gotify ↔ 华为 Push Kit(HarmonyOS NEXT v3) 转发桥。
       【已配置】后一律忽略——防公网攻击者抢首注把后端改成他的 Gotify。要零赛跑：yaml 预填 gotify 即启动即锁。
       gotify 两项都没有 = waiting for app（开 /register 等 App 首注），不拿占位符瞎连。
 
-鉴权：服务账号 JWT 直接当 Bearer（官方 push-jwt-token，不换 access_token）。
+鉴权（桥侧）：无。桥不再直连 Push Kit，改 HTTP POST 推送服务（见 PushKit.md §10.1）。
+      华为服务账号 private.json 锁在推送服务里（§1/§7），桥不含 private → 可开源。
+      推送服务侧的 AUTH_TOKEN（可选）由 cloud_function_token 带头（§4.1/§8.1）。
 图标：不设 notification.image —— 通知小图标默认就是 Hotify 自己的应用图标（即 logo）。
       image 字段是可选「大图标」：曾取 Gotify 来源 app 图标，但 URL 拼错 + 华为拉不到
       （报 Get image failed, url is invalid），且转发场景下来源恒为 SmsForwarder 无意义，已移除。
 
-依赖：pip install websockets PyJWT cryptography
+依赖：pip install websockets
 运行：python -u gotify_pushkit_bridge.py
 ================================================================================
 """
@@ -23,7 +25,6 @@ Gotify ↔ 华为 Push Kit(HarmonyOS NEXT v3) 转发桥。
 import asyncio
 import json
 import os
-import shutil
 import ssl
 import sys
 import time
@@ -32,7 +33,6 @@ import urllib.request
 import urllib.parse
 import urllib.error
 import websockets
-import jwt as pyjwt  # PyJWT；PS256 签名需 cryptography
 
 # Windows 控制台默认 GBK，emoji/特殊符号会 UnicodeEncodeError；强制 UTF-8。
 try:
@@ -55,6 +55,11 @@ _CFG_DEFAULTS = {
     "tls_key_file": "",        # 与 tls_cert_file 配对；与 Gotify 共用同一张域名证书（acme.sh/certbot 的 PEM）
     # —— 订阅类字样标注（华为 Push Kit"订阅"类消息分类要求携带订阅类字样，见 push-apply-right）——
     "subscribe_label": "true", # 是否给转发标题加"订阅:"前缀。true=加；false=不加。仅桥端配置（不入 App）。
+    # —— App 侧 server 标识（M4-CP2：App /register 上报，桥 clickAction 带回 → App 反查 server 临时切来源）——
+    "server_id": "",          # App 的 server.id（每次 register 刷新，非 first-set wins——app 侧标识，跟 token/subscribed 同级）
+    # —— 推送服务入口（PushKit.md §10.1/§11：桥不再直连 Push Kit，改 HTTP POST 推送服务）——
+    "cloud_function_urls": [],                                  # 默认空（B：部署者自己填；managed URL 见 repourl.md/repo，或填自托管的）。list 可扩展做 fallback/多函数分发
+    "cloud_function_token": "hotifypushkit",                    # AUTH_TOKEN 默认写死（防爬虫，非防推送；自托管在 bridge_config.yaml override；见 §4.1/§8.1）
 }
 _cfg = dict(_CFG_DEFAULTS)     # 运行时配置；init_config 填，_process_register 改动态项，keep_subscribed 读
 _file_lock = threading.Lock()   # 文件读写锁：register（async loop）+ 推送（to_thread）跨线程读写 tokens/subscribe_status/bridge_config，全量 load/save 并发要锁防半写
@@ -75,6 +80,14 @@ def load_bridge_config() -> dict:
                 val = val.split(" #", 1)[0].strip()        # 去尾部行内注释（空格+#）
                 if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
                     val = val[1:-1]                          # 去外层可选引号（" 或 '）
+                if val[:1] == "[" and val[-1:] == "]":      # list 字面量 → json.loads
+                    try:
+                        val = json.loads(val)
+                    except Exception:
+                        pass                                # 解析失败保留原字符串
+                elif isinstance(_CFG_DEFAULTS.get(key), list) and isinstance(val, str):
+                    # 宽松归一化：list 型键写了裸字符串 → 单元素 list（cloud_function_urls: https://x → [https://x]）
+                    val = [val] if val else []
                 cfg[key] = val
     except FileNotFoundError:
         pass
@@ -84,27 +97,32 @@ def load_bridge_config() -> dict:
 
 
 def save_bridge_config():
-    """App 上报 gotify 后持久化：只替换 gotify_url / gotify_token 两行的值，其余（静态项 + # 注释）
-    原样保留——不整文件重写，避免丢注释、避免"动"踩"静"。"""
+    """App 上报后持久化动态项：只替换 gotify_url / gotify_token / server_id 三行的值，其余（静态项 + # 注释）
+    原样保留——不整文件重写，避免丢注释、避免"动"踩"静"。M4-CP2 加 server_id（重启不丢：App 启动不重报，
+    桥重启后 clickAction 仍带 server_id 供 App 反查）。"""
     with _file_lock:
         try:
             with open(BRIDGE_CONFIG_FILE, encoding="utf-8") as f:
                 lines = f.readlines()
         except FileNotFoundError:
             lines = []
-        out, wrote_url, wrote_tok = [], False, False
+        out, wrote_url, wrote_tok, wrote_sid = [], False, False, False
         for line in lines:
             key = line.lstrip()
             if key.startswith("gotify_url:"):
                 out.append(f'gotify_url: {_cfg["gotify_url"]}\n'); wrote_url = True
             elif key.startswith("gotify_token:"):
                 out.append(f'gotify_token: {_cfg["gotify_token"]}\n'); wrote_tok = True
+            elif key.startswith("server_id:"):
+                out.append(f'server_id: {_cfg.get("server_id", "")}\n'); wrote_sid = True
             else:
                 out.append(line)
-        if not wrote_url:                                   # 文件里没这两行（罕见）→ 追加
+        if not wrote_url:                                   # 文件里没这行（罕见）→ 追加
             out.append(f'gotify_url: {_cfg["gotify_url"]}\n')
         if not wrote_tok:
             out.append(f'gotify_token: {_cfg["gotify_token"]}\n')
+        if not wrote_sid:
+            out.append(f'server_id: {_cfg.get("server_id", "")}\n')
         with open(BRIDGE_CONFIG_FILE, "w", encoding="utf-8") as f:
             f.writelines(out)
 
@@ -138,72 +156,60 @@ def init_config():
 
 
 def _seed_config_file():
-    """首次启动：从 example 模板复制一份 bridge_config.yaml（带 # 注释），部署者直接改。"""
-    example = "bridge_config.example.yaml"
-    if os.path.exists(example):
-        shutil.copyfile(example, BRIDGE_CONFIG_FILE)
-        print(f"[配置] 未找到 {BRIDGE_CONFIG_FILE}，已从 {example} 复制一份（带注释）。")
-    else:
-        with open(BRIDGE_CONFIG_FILE, "w", encoding="utf-8") as f:
-            for k, v in _CFG_DEFAULTS.items():
-                f.write(f"{k}: {v}\n")
-        print(f"[配置] 未找到 {BRIDGE_CONFIG_FILE}，已建一份默认配置（无 example，故无注释）。")
-    print(f"[配置] ✏️ 请编辑 {BRIDGE_CONFIG_FILE} 填入 gotify / 证书路径，存盘后重启 Hotify 推送服务。")
+    """首次启动：生成带注释的 bridge_config.yaml（部署者直接改）。注释内嵌于此，无 example 模板文件。"""
+    d = _CFG_DEFAULTS
+    with open(BRIDGE_CONFIG_FILE, "w", encoding="utf-8") as f:
+        f.write(f"""# bridge_config.yaml — Hotify 桥配置（首次自动生成，按需修改）
+# 格式宽松：每行 `键: 值`，值 = 冒号后整段（反斜杠/冒号原样，引号可选）。# 开头是注释。
+# 必填：gotify_token + cloud_function_urls。其余有默认值或自动探测。详见 BRIDGE.md / repourl.md
+
+# Gotify 地址（App 视角）。完整地址 https://你的域名:端口（远程/域名）；或只填端口→同机明文。App 上报会覆盖。
+gotify_url: {d['gotify_url']}
+
+# Gotify client token（读消息 / 订阅流；机密，别提交 git）
+gotify_token: {d['gotify_token']}
+
+# 桥连 Gotify 的本地地址，覆盖上面的 gotify_url。同机 TLS Gotify 填 https://127.0.0.1:端口（自动跳过证书校验、免 hairpin）；留空→用 gotify_url
+gotify_url_local: {d['gotify_url_local']}
+
+# /register 监听端口。留空→默认 25238（启动 ⚠️ 提醒）；填了用填的
+register_port:
+
+# TLS 证书【文件路径】。填了→/register 走 https；留空→明文 http（启动 ⚠️ 提醒降级）。Windows 直接 C:\\Users\\... 或 C:/Users/... 都行（反斜杠不转义）。
+tls_cert_file: {d['tls_cert_file']}
+
+# TLS 私钥【文件路径】，与 tls_cert_file 配对。与 Gotify 共用同一张域名证书。
+tls_key_file: {d['tls_key_file']}
+
+# 订阅类字样标注开关。true（默认）= 转发时给标题加"订阅:"前缀（如"订阅:短信验证码"）；false = 不加。
+subscribe_label: {d['subscribe_label']}
+
+# App 侧 server 标识（App /register 上报，桥 clickAction 带回）。留空，App 上报后自动填。
+server_id: {d['server_id']}
+
+# 推送服务入口（桥不直连 Push Kit，HTTP POST 推送服务；private 锁在服务里）。
+# 必填：推送服务 URL 的 JSON 数组如 ["https://xxx/api/push"]，可多个做 fallback（主挂调备）/ 多函数分发。
+# managed URL 见 repourl.md / repo；自托管填你自己的。
+cloud_function_urls: {d['cloud_function_urls']}
+
+# 推送服务 AUTH_TOKEN（防爬虫，非防推送）。默认 hotifypushkit（managed）；自托管填你服务侧配的；留空=服务侧没开鉴权。
+cloud_function_token: {d['cloud_function_token']}
+""")
+    print(f"[配置] 未找到 {BRIDGE_CONFIG_FILE}，已生成一份（带注释 + 默认值）。")
+    print(f"[配置] ✏️ 请编辑 {BRIDGE_CONFIG_FILE}：必填 gotify_token + cloud_function_urls，存盘后重启。")
 
 
-# ──────────────────────── 华为服务账号 + 推送 ────────────────────────
-SERVICE_ACCOUNT_FILE = "private.json"   # AGC 项目设置→常规→服务账号 下载
+# ──────────────────────── 推送服务常量（转发 body 用）────────────────────────
 NOTIFY_CATEGORY = "SUBSCRIPTION"   # 通知消息分类 category，须与已开通的自分类权益类目一致。
                               # 订阅类(SUBSCRIPTION)自分类权益 2026-07-02 已审核通过（华为要求配置 category=SUBSCRIPTION；未开通权益时携带该 category 值会归资讯营销）。
-TEST_MESSAGE    = True                  # 调测期绕频控；正式改 False
+TEST_MESSAGE    = False                 # 初期没自分类权益时=True 绕频控（无权益会被 MARKETING 频控）；有权益（服务/通讯类无频控）→False
 
 PUSH_TOKENS_FILE = "push_tokens.json"
 SUBSCRIBE_STATUS_FILE = "subscribe_status.json"  # {device_id: bool}，App /register 上报的订阅状态（订阅总开关）
 REGISTER_PORT    = 25238     # /register 监听端口（桥内部默认值；要改改这行，不入配置文件）
 
-PUSH_URL  = "https://push-api.cloud.huawei.com/v3/{project_id}/messages:send"
-TOKEN_URI = "https://oauth-login.cloud.huawei.com/oauth2/v3/token"
-
-# ──────────────────────────── 运行态缓存 ────────────────────────────
-_sa = None               # 服务账号配置
-_jwt_token = None        # 缓存 JWT（官方 push-jwt-token：JWT 直接当 Bearer，不换 access_token；见 get_bearer_token）
-_jwt_exp = 0             # JWT 到期时间戳（exp=签发+3600s）
-
-
-def load_service_account():
-    """加载华为服务账号 private.json。缺失则告警但不退出——桥仍可订阅 Gotify /stream，
-    仅 Push Kit 转发跳过（send_to_huawei 见 _sa is None 即 return）。"""
-    global _sa
-    if not os.path.exists(SERVICE_ACCOUNT_FILE):
-        print(f"[PushKit] ⚠️ 未找到 {SERVICE_ACCOUNT_FILE}（华为服务账号 RSA 私钥）。")
-        print(f"[PushKit]    Hotify 推送服务会照常订阅 Gotify /stream，但 Push Kit 转发将跳过。")
-        print(f"[PushKit]    要完整推送：AGC 建项目→开通 Push Kit→下载服务账号 private.json 放本目录。")
-        return
-    with open(SERVICE_ACCOUNT_FILE, "r", encoding="utf-8") as f:
-        _sa = json.load(f)
-    print(f"[PushKit] 加载服务账号 project_id={_sa.get('project_id')}")
-
-
-def _gen_jwt() -> str:
-    """服务账号 JWT = 鉴权令牌本身（官方 push-jwt-token：JWT 直接当 Bearer，无"换 access_token"步）。
-    Header {kid:key_id, typ:JWT, alg:PS256}；Payload {iss:sub_account, aud:TOKEN_URI, iat, exp=iat+3600}。
-    照官方 5 语言示例，无 sub claim。"""
-    now = int(time.time())
-    payload = {"iss": _sa["sub_account"], "aud": TOKEN_URI, "iat": now, "exp": now + 3600}
-    return pyjwt.encode(payload, _sa["private_key"], algorithm="PS256",
-                        headers={"kid": _sa["key_id"], "typ": "JWT"})
-
-
-def get_bearer_token() -> str:
-    """官方 push-jwt-token：JWT 本身就是 Bearer 令牌，直接放 Authorization（不调 oauth2/v3/token 换 access_token——
-    那端点要 client_id 会报 1102，且官方文档无此步；旧 get_access_token 走错路了）。缓存 JWT、临近 exp(1h) 重签。"""
-    global _jwt_token, _jwt_exp
-    if _jwt_token and time.time() < _jwt_exp - 60:
-        return _jwt_token
-    _jwt_token = _gen_jwt()
-    _jwt_exp = time.time() + 3600
-    print("[PushKit] JWT 鉴权令牌已生成（1h 有效，直接当 Bearer）")
-    return _jwt_token
+# 华为服务账号 private.json / JWT 签名 / PUSH_URL / TOKEN_URI 已移除——桥不再直连 Push Kit，
+# 改 HTTP POST 推送服务（private 锁在推送服务里）。详见 PushKit.md §10.1。
 
 
 # ──────────────────────────── 设备 token 注册表 + App 配置上报 ────────────────────────────
@@ -269,6 +275,14 @@ def _process_register(payload: dict) -> dict:
         status[client] = bool(subscribed)
         save_subscribe_status(status)
         print(f"[注册] {client} subscribed={'订阅' if subscribed else '已取消'}")
+
+    # server_id（App 侧 server 标识，M4-CP2）：每次 register 刷新（非 first-set wins——app 侧标识，
+    # 跟 token/subscribed 同级；删 server 重加新 id 能更新）。clickAction 带回 → App 反查 server 临时切来源。
+    server_id = payload.get("server_id") or ""
+    if server_id and _cfg.get("server_id", "") != server_id:
+        _cfg["server_id"] = server_id
+        save_bridge_config()                           # 持久化（重启不丢：App 启动不重报，桥重启后 clickAction 仍带 server_id）
+        print(f"[注册] server_id -> {server_id[:8]}... （clickAction 带回供 App 反查）")
 
     # 2) gotify 配置：first-set wins，之后锁（防公网抢首注改后端）。
     gurl = normalize_gotify_addr(payload.get("gotify_url") or "")
@@ -387,11 +401,93 @@ async def start_register_server() -> None:
         await server.serve_forever()
 
 
-# ──────────────────────────── 推送到华为 (v3) ────────────────────────────
+# ──────────────────────────── 推送到华为（经推送服务，PushKit.md §10.1）────────────────────────────
 
-def send_to_huawei(title, message, priority=4, extras=None, appid=0):
-    if _sa is None:
-        print(f"[PushKit] ⏭ 跳过推送（private.json 未配置）：{title or '(无标题)'} | {(message or '')[:40]}")
+# 死-token 白名单：仅这两个码语义 = "该 token 无效/投不出去"（≈ APNs Unregistered），其余码一律【保留】。
+#   80100000 部分 token 失败（单 token 推时 failure 的 illegal_tokens 就是它）/ 80300007 所有 token 无效。
+#   鉴权 802x、权益 80300002、消息超长 80300008、频控、系统错 81xxxxx 都跟 token 死活无关——误删会丢好 token
+#   （鉴权闪一下全台端最惨）。码来自华为官方码表（PushKit.md §5.3），不拍脑袋。
+DEAD_TOKEN_CODES = {"80100000", "80300007"}
+
+# 推送服务返 HTTP 502（pushkit_http_error / pushkit_timeout）或网络异常时重试次数（PushKit.md §8.3）。
+# 固定 3 次，简单间隔；同 notifyId → Push Kit 原生覆盖 → 防重复推送。
+PUSH_RETRY_LIMIT = 3
+PUSH_RETRY_INTERVAL = 1.0   # 秒（重试间隔；PushKit.md §8.3「简单间隔」，不指数退避——量小 YAGNI）
+
+
+def _post_to_push_service(url, token, body, notify_id):
+    """向单个推送服务 URL 发一次 POST，返回 (status, code_str_or_None, msg_or_err)。
+    status ∈ {"delivered","dead","system_error","retry"}：
+      - delivered     : HTTP 200 + code="80000000"
+      - dead          : HTTP 200 + code ∈ DEAD_TOKEN_CODES（80100000/80300007）
+      - system_error  : HTTP 200 + 其他 code（鉴权/权益/超长/频控/系统错，保留 token），
+                        或 HTTP 500/其他 5xx、401、400（PushKit.md §8.2）
+      - retry         : HTTP 502（pushkit_http_error/pushkit_timeout，PushKit.md §4.2）或网络异常/超时 → 调用方重试
+    code_str：HTTP 200 时为 Push Kit code（字符串）；否则 None。
+    msg：人类可读的诊断串（code/msg 或 HTTP body 片段或异常名）。"""
+    headers = {"Content-Type": "application/json"}
+    if token:                                   # cloud_function_token 非空才带（PushKit.md §4.1/§8.1）
+        headers["Authorization"] = f"Bearer {token}"
+    data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    try:
+        req = urllib.request.Request(url, data=data, headers=headers, method="POST")  # 移入 try：URL 缺 scheme 时 Request() 抛 ValueError
+        with urllib.request.urlopen(req, timeout=15) as r:   # 15s：推送服务内部 10s 调 Push Kit + 余量
+            resp_raw = r.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as e:
+        body_snippet = ""
+        try:
+            body_snippet = e.read().decode("utf-8", errors="replace")[:160]
+        except Exception:
+            pass
+        if e.code == 502:
+            # Push Kit HTTP 错/超时（PushKit.md §4.2：pushkit_http_error / pushkit_timeout）→ 重试
+            return ("retry", None, f"HTTP 502 {body_snippet}")
+        if e.code == 401:
+            # AUTH_TOKEN 配错（PushKit.md §8.2）→ 配置问题，重试也没用，但归 SystemError 保留 token
+            return ("system_error", None, f"HTTP 401 unauthorized（cloud_function_token 配错？）{body_snippet}")
+        if e.code == 400:
+            # 请求格式错（缺 token 等，PushKit.md §8.2）→ 调用方代码 bug，SystemError 保留
+            return ("system_error", None, f"HTTP 400 bad request {body_snippet}")
+        # 其他 5xx（500 等）→ SystemError 保留（PushKit.md §8.2）
+        return ("system_error", None, f"HTTP {e.code} {body_snippet}")
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        # 网络异常/连不上/超时 → 重试（可能某 URL 瞬时挂，fallback 或重试能救）
+        return ("retry", None, f"{type(e).__name__}: {e}")
+    except ValueError as e:
+        # URL 格式错（缺 scheme 等，配置问题）→ SystemError 保留 token，不重试（防 Request() ValueError 窜到 Gotify 流）
+        return ("system_error", None, f"URL 格式错（检查 cloud_function_urls 带 https://）: {e}")
+    except Exception as e:
+        # 未预期异常 → 保守归 SystemError 保留 token（不删不重试，等下次）
+        return ("system_error", None, f"{type(e).__name__}: {e}")
+
+    # HTTP 200：解析 Push Kit 原始响应的 code（PushKit.md §4.2：body 原样透传，code 是字符串）
+    try:
+        resp = json.loads(resp_raw or "{}")
+    except json.JSONDecodeError:
+        # 推送服务返了非 JSON（不合规）→ SystemError 保留
+        return ("system_error", None, f"HTTP 200 但 body 非 JSON：{resp_raw[:160]}")
+    code = str(resp.get("code"))
+    msg = resp.get("msg")
+    if code == "80000000":
+        return ("delivered", code, msg)
+    if code in DEAD_TOKEN_CODES:
+        return ("dead", code, msg)
+    # 其他 code（鉴权 802x / 权益 80300002 / 消息超长 80300008 / 频控 / 系统错 81xxxxx）→ 保留 token
+    return ("system_error", code, f"code={code} msg={msg}")
+
+
+def send_to_huawei(title, message, priority=4, extras=None, appid=0, ts="", server_id="", notify_id=0):
+    """转发一条 Gotify 消息到所有已注册鸿蒙设备（经推送服务，非直连 Push Kit）。
+    流程（PushKit.md §10.1）：
+      1) 构造 notification（含 clickAction：appid/server_id/ts 透传给 App）。
+      2) 逐设备：遍历 cloud_function_urls（fallback），每 URL 重试 ≤3 次（同 notify_id 幂等，
+         Push Kit 原生覆盖防重复）。拿到 Push Kit code 按 §8.2 分类。
+      3) 全局闸门：本轮 delivered==0 则不删任何死 token（防系统性故障误删）。
+    notify_id = Gotify msgId（_forward 传入）—— 重试同 id，Push Kit 覆盖防重复（PushKit.md §8.3）。"""
+    urls = _cfg.get("cloud_function_urls") or []
+    cf_token = _cfg.get("cloud_function_token") or ""
+    if not urls:
+        print(f"[PushKit] ⏭ 跳过推送（cloud_function_urls 未配置）：{title or '(无标题)'} | {(message or '')[:40]}")
         return
     devs = load_tokens()  # {device_id: push_token}
     if not devs:
@@ -399,29 +495,16 @@ def send_to_huawei(title, message, priority=4, extras=None, appid=0):
 
     # 订阅类字样标注：华为 Push Kit 通知消息分类要求"订阅"类(SUBSCRIPTION)消息在标题或正文
     # 携带"订阅/预约/关注"等字样（见 push-apply-right#订阅流程要点）。subscribe_label=true 时
-    # 给消息加"订阅:"前缀以符合该分类标注要求；false=不加。格式：title 有→加标题前；title 空→加 body 开头。
+    # 给消息加"订阅:"前缀以符合该分类标注要求；false=不加。
     if _cfg.get("subscribe_label", "true").lower() in ("true", "1", "yes", "on"):
         if title:
             title = f"订阅:{title}"
         else:
             message = f"订阅:{message or ''}".strip()
 
-    notification = {
-        "category": NOTIFY_CATEGORY,
-        "title": title or "Hotify",
-        "body": message,
-        "badge": {"addNum": 1},
-        "clickAction": {"actionType": 0, "data": {"appid": appid}},
-    }
-    # 不设 notification.image：通知小图标默认用 Hotify 自己的应用图标（logo），无需来源 app 图标（见模块头注释）。
+    # notifyId（进 notification）：Gotify msgId = 全局递增整数，重试同 id → Push Kit 原生覆盖防重复。0 省略。
+    notify_id_int = int(notify_id) if notify_id else 0
 
-    # 逐 token 推（非批量）：① 能按单 token 拿返回码、清理失效 token（bark 式，device 卸载/重装后旧 token 不再当孤儿反复推）；
-    # ② 多设备各自独立、互不影响。代价：N 台=N 次 API（自用几台无妨；JWT 缓存复用）。
-    # 死-token 白名单：仅这两个码语义 = "该 token 无效/投不出去"（≈ APNs Unregistered），其余码一律【保留】。
-    #   80100000 部分 token 失败（单 token 推时 failure 的 illegal_tokens 就是它）/ 80300007 所有 token 无效。
-    #   鉴权 802x、权益 80300002、消息超长 80300008、频控、系统错 81xxxxx 都跟 token 死活无关——误删会丢好 token
-    #   （鉴权闪一下全台端最惨）。码来自华为官方码表，不拍脑袋。详见 CHANGELOG。
-    DEAD_TOKEN_CODES = {"80100000", "80300007"}
     # 订阅状态过滤：subscribed=false 的设备跳过（用户在 App 取消了订阅）。
     # 未记录的设备默认订阅（get(dev_id, True)），不破坏老设备 / 首装还没上报订阅状态的。
     sub_status = load_subscribe_status()
@@ -429,41 +512,71 @@ def send_to_huawei(title, message, priority=4, extras=None, appid=0):
     for dev_id, tok in list(devs.items()):
         if not sub_status.get(dev_id, True):    # False = 用户取消订阅 → 跳过该设备（不推、不计数、不清 token）
             continue
-        payload = {
-            "target": {"token": [tok]},
-            "payload": {
-                "notification": notification,
-                "data": json.dumps({"priority": priority, "extras": extras or {}}, ensure_ascii=False),
-            },
-            # pushOptions 须【顶层】（与 target/payload 平级），否则华为读不到 testMessage → 走 MARKETING 频控（每设备 2~5 条/天）。
-            "pushOptions": {"testMessage": TEST_MESSAGE},
+
+        # 转发 body（PushKit.md §4 纯协议契约）：token + notification 对象（调用方构造，函数原样透传不解释）+ data 串。
+        # notification 字段随便加（badge/sound 等）只改这里，函数不动（冻结）。clickAction 必带且 actionType 必须 0
+        # （不带 → 80100003；actionType 1 要 action/uri → 见 task.md #19）。server_id/ts/appid（M4-CP2）走 data，App 从 notification.data 读。
+        notification = {
+            "category": NOTIFY_CATEGORY,
+            "title": title or "Hotify",
+            "body": message,
+            "clickAction": {"actionType": 0},
         }
-        req = urllib.request.Request(PUSH_URL.format(project_id=_sa["project_id"]),
-                                     data=json.dumps(payload).encode("utf-8"), method="POST")
-        req.add_header("Content-Type", "application/json")
-        req.add_header("Authorization", f"Bearer {get_bearer_token()}")
-        req.add_header("push-type", "0")
-        try:
-            with urllib.request.urlopen(req, timeout=10) as r:
-                resp = json.loads(r.read().decode("utf-8"))
-                code = str(resp.get("code"))
-                if code == "80000000":
-                    delivered += 1
-                    print(f"[PushKit] ✓ {dev_id} code=80000000")
-                elif code in DEAD_TOKEN_CODES:
-                    print(f"[PushKit] ✗ {dev_id} code={code} msg={resp.get('msg')} → 该 token 无效")
-                    dead.append(dev_id)
-                else:
-                    # 类 B（鉴权 802x / 权益 80300002 / 消息超长 80300008 / 频控 / 系统错 81xxxxx）：与 token 死活无关 → 保留
-                    print(f"[PushKit] ⚠️ {dev_id} code={code} msg={resp.get('msg')} → 保留（非死-token 码，疑系统/参数问题）")
-        except urllib.error.HTTPError as e:
-            # HTTP 层错（401/403/429/5xx）：系统性/鉴权/限流 → 保留（旧逻辑这里误删，最危险的一刀）
-            print(f"[PushKit] ⚠️ {dev_id} HTTP {e.code}: {e.read().decode()[:120]} → 保留（HTTP 层错误，非死 token）")
-        except Exception as e:
-            print(f"[PushKit] ✗ {dev_id} {type(e).__name__}: {e}（网络？保留 token）")
+        if notify_id_int:
+            notification["notifyId"] = notify_id_int
+        data_obj = dict(extras or {})
+        if server_id or ts or appid:
+            data_obj["_hotify"] = {"appid": appid, "server_id": server_id, "ts": ts}
+        body = {
+            "token": tok,
+            "notification": notification,
+            "data": json.dumps(data_obj, ensure_ascii=False),
+            "testMessage": TEST_MESSAGE,
+        }
+
+        # 遍历 URLs（fallback，PushKit.md §11）：urls[0] 失败/超时 → urls[1] → ... → 都失败放弃（保留 token）。
+        # 每 URL 内部再重试 ≤3 次（仅 retry 状态重试；delivered/dead/system_error 终态即出）。
+        final_status, final_msg = None, ""
+        for url in urls:
+            attempt_status, attempt_msg = None, ""
+            for attempt in range(1, PUSH_RETRY_LIMIT + 1):
+                status, code, msg = _post_to_push_service(url, cf_token, body, notify_id_int)
+                attempt_status, attempt_msg = status, (msg or "")
+                if status == "delivered":
+                    print(f"[PushKit] ✓ {dev_id} code=80000000  (url={url})")
+                    break
+                if status == "dead":
+                    print(f"[PushKit] ✗ {dev_id} code={code} msg={msg} → 该 token 无效  (url={url})")
+                    break
+                if status == "system_error":
+                    # code 来源已是 Push Kit 原始响应（非死码：鉴权/权益/超长/频控/系统错）或 HTTP 5xx/401/400
+                    # → 与 token 死活无关，保留（PushKit.md §8.2）
+                    print(f"[PushKit] ⚠️ {dev_id} {msg} → 保留（非死-token，疑系统/参数问题）  (url={url})")
+                    break
+                # status == "retry"：502/超时/网络 → 同 URL 重试（PushKit.md §8.3，同 notify_id 幂等）
+                if attempt < PUSH_RETRY_LIMIT:
+                    print(f"[PushKit] ↻ {dev_id} {msg} → 重试 {attempt+1}/{PUSH_RETRY_LIMIT}  (url={url})")
+                    time.sleep(PUSH_RETRY_INTERVAL)
+            # 走出重试循环：要么拿到终态，要么 retry 用尽
+            final_status, final_msg = attempt_status, attempt_msg
+            if attempt_status in ("delivered", "dead", "system_error"):
+                break                       # 拿到终态 → 不再 fallback 下一个 URL
+            # attempt_status == "retry" 且用尽 3 次 → 试下一个 URL（fallback）
+
+        # 所有 URL 都试完，按最终状态汇总
+        if final_status == "delivered":
+            delivered += 1
+        elif final_status == "dead":
+            dead.append(dev_id)
+        else:
+            # system_error 或 retry 用尽（所有 URL 都 502/超时）→ 保留 token，下次新消息再推
+            if final_status == "retry":
+                print(f"[PushKit] ✗ {dev_id} 所有 URL 重试用尽仍失败 → 保留 token（下次再推）：{final_msg}")
+            # system_error 已在上面打印过
+
     if dead:
-        # 全局闸门：本轮【至少一台成功】才删。否则多半是系统性故障（鉴权/配置/权益/服务端），死码也可能被误触发
-        # （如 app 包名配错时全台返 80300007）→ 一台都不删，防"全锅端"丢好 token。
+        # 全局闸门（PushKit.md §5.3/§10.1）：本轮【至少一台成功】才删。否则疑系统性故障
+        # （鉴权/配置/权益/服务端），死码也可能被误触发（如 app 包名配错全台返 80300007）→ 一台都不删，防"全锅端"丢好 token。
         if delivered == 0:
             print(f"[PushKit] ⚠️ 本轮 0 台成功，疑系统性故障，保留全部 {len(dead)} 个疑似失效 token（不删）：{dead}")
             dead = []
@@ -568,7 +681,9 @@ def _forward(msg, tag="实时"):
         return
     _last_msg_id = mid
     send_to_huawei(msg.get("title") or "", msg.get("message") or "",
-                   msg.get("priority", 4), msg.get("extras"), msg.get("appid", 0))
+                   msg.get("priority", 4), msg.get("extras"), msg.get("appid", 0),
+                   ts=msg.get("date", ""), server_id=_cfg.get("server_id", ""),
+                   notify_id=msg.get("id", 0))
     print(f"[Gotify][{tag}] id={mid} 已转发")
 
 
@@ -641,7 +756,11 @@ if __name__ == "__main__":
         print(f"[Hotify 推送服务] 已有 Gotify 配置：{_cfg['gotify_url']}")
     else:
         print("[Hotify 推送服务] 无 Gotify 配置，等待 App 上报（开 /register 等）")
-    load_service_account()
+    cf_urls = _cfg.get("cloud_function_urls") or []
+    if cf_urls:
+        print(f"[Hotify 推送服务] 推送入口：{cf_urls[0]}" + (f"（+{len(cf_urls)-1} 个备用）" if len(cf_urls) > 1 else ""))
+    else:
+        print("[Hotify 推送服务] ⚠️ cloud_function_urls 未配置，Push Kit 转发将跳过（在 bridge_config.yaml 填）")
     try:
         asyncio.run(_main_async())
     except KeyboardInterrupt:

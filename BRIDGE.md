@@ -11,14 +11,14 @@
 桥干两件事：① 订阅 Gotify `/stream` 收新消息（+断线按 id 高水位**回补**漏的消息）② 经 Push Kit v3 推到已注册设备。另开 `POST /register` 接收 App 上报：push token 每次刷新；gotify 配置 **first-set wins**（首次上报锁定写回 yaml，之后再报忽略——防公网攻击者抢首注把后端改成他的 Gotify；要零赛跑就 yaml 预填）。
 
 ## 两种运行状态
-- **脊柱模式（现在就能跑）**：无 `private.json` → 订阅 Gotify `/stream`、断线回补都正常，**Push Kit 转发跳过**（日志 `⏭ 跳过推送`）。用于先验证 Gotify 链路。
-- **完整模式（milestone 2）**：放 `private.json` → 全链路推到鸿蒙锁屏。
+- **只订阅模式**：`cloud_function_urls` 未配 → 订阅 Gotify `/stream`、断线回补都正常，**Push Kit 转发跳过**（日志 `⏭ 跳过推送`）。用于先验证 Gotify 链路。
+- **完整模式**：`cloud_function_urls` 配了（默认 Hotify 托管函数，或自部署）→ 全链路推到鸿蒙锁屏。
 
 ## 前置
 - Python 3.8+（本机已有）
-- 依赖：`pip install websockets PyJWT cryptography`（均已装）
+- 依赖：`pip install websockets`（PyJWT/cryptography 已移除——桥不再签 JWT，云函数干）
 - Gotify 可达（本机直连 `wss://<your-gotify-host>:<port>` 已验证通）
-- 完整推送另需：`private.json`（华为服务账号）、设备 push token（App 上报）、自分类权益/`TEST_MESSAGE`
+- 完整推送另需：`cloud_function_urls` 推送服务入口（默认 Hotify 托管，见 PushKit.md）、设备 push token（App 上报）、自分类权益/`TEST_MESSAGE`
 
 ## 运行（Windows / Git Bash）
 ```bash
@@ -33,7 +33,7 @@ python -u gotify_pushkit_bridge.py                       # -u 无缓冲，日志
 [Gotify] 高水位初始化 = 2814（不回放历史）
 [Gotify] 订阅 wss://<your-gotify-host>:<port>/stream?token=***
 ```
-然后常驻：来新消息打印 `[Gotify][实时] id=... 已转发`（完整模式）或 `⏭ 跳过推送（private.json 未配置）`（脊柱模式）。断线自动 5 秒重连 + 回补。
+然后常驻：来新消息打印 `[Gotify][实时] id=... 已转发`（完整模式）或 `⏭ 跳过推送（cloud_function_urls 未配置）`（只订阅模式）。断线自动 5 秒重连 + 回补。
 
 ## 配置（bridge_config.yaml：动静结合 + 文件）
 | 项 | 在哪 | 说明 |
@@ -41,12 +41,12 @@ python -u gotify_pushkit_bridge.py                       # -u 无缓冲，日志
 | `gotify_url` / `gotify_token` | `bridge_config.yaml`（**首次 App 上报锁定** / yaml 预填）> env 兜底 | **必填**。Gotify 地址 + client token（读消息/订阅流）。首次 App 上报后锁定，之后再报桥忽略（防公网抢首注改后端）。见下方「client token 怎么拿」 |
 | `register_port` | `bridge_config.yaml`（静态，部署者填） | `/register` 监听端口；**留空 → 默认 25238** |
 | `tls_cert_file` / `tls_key_file` | `bridge_config.yaml`（静态，部署者填） | 填了 → `/register` 走 https；空 → 明文 http（仅 LAN/调试）。与 Gotify 同一张域名证书 |
-| `private.json` | 同目录文件 | 华为服务账号（AGC 下载，含 RSA 私钥）。缺失=脊柱模式（跳过推送，不崩） |
+| `cloud_function_urls` / `cloud_function_token` | `bridge_config.yaml` | 推送服务入口 URL（JSON 数组，可多个 fallback）/ AUTH_TOKEN。private 锁云函数、**不入桥**。留空=只订阅模式（跳过推送，不崩）。见 repourl.md |
 | `push_tokens.json` | 自动生成 | App 上报的 push token 存这里，别手改 |
 | `TEST_MESSAGE` | 源码常量 | 已设 `True`，调测期绕 MARKETING 频控（每项目 1000 条/天）；正式改 `False` |
-| `NOTIFY_CATEGORY` | 源码常量 | 推送类目，须与申到的自分类权益一致（默认 `ACCOUNT`） |
+| `NOTIFY_CATEGORY` | 源码常量 | 推送类目，须与申到的自分类权益一致（默认 `SUBSCRIPTION`） |
 
-⚠️ token / `private.json` 私钥都是**机密**，靠本地文件 + bridge_config.yaml（gitignore）/ 环境变量，**别提交 git**。
+⚠️ `gotify_token` 是**机密**，靠 bridge_config.yaml（gitignore）/ 环境变量，**别提交 git**。private 锁云函数（Netlify env），桥不含 → 桥可开源。
 
 ## 智能模式：Gotify 地址（端口 vs 完整地址）
 桥连 Gotify 的地址（App「设置」的"Gotify 地址"，或 env / `bridge_config.yaml`）支持两种输入：
@@ -65,33 +65,29 @@ Gotify WebUI（`https://<your-gotify-host>`）→ 登录 → **CLIENTS** 页 →
 ## 常见问题
 | 现象 | 原因 / 处理 |
 |---|---|
-| 闪退/秒退 | 曾因 `private.json` 缺失开局崩（**已改成告警不退**）；或 GBK 编码打 emoji 崩（**已强制 stdout UTF-8**）。现在缺 `private.json` 只告警、照常订阅 |
+| 闪退/秒退 | GBK 编码打 emoji 崩（**已强制 stdout UTF-8**）——用 `PYTHONUTF8=1 python -u ...`。（private.json 相关旧崩已随直连 Push Kit 移除） |
 | `UnicodeEncodeError 'gbk'` | 已修（脚本顶部 `sys.stdout.reconfigure(utf-8)`）。若仍现，用 `PYTHONUTF8=1 python -u ...` |
 | 订阅立刻断 / 401 | `GOTIFY_CLIENT_TOKEN` 错（填成 app token）或失效 → 换 client token |
-| 收到消息没推到手机 | ① 脊柱模式（无 `private.json`，正常跳过）② 没设备注册（看 `push_tokens.json` 是否有值）③ Push Kit 频控/自分类权益（看 Push Kit 返回 code，非 `80000000`=失败） |
+| 收到消息没推到手机 | ① 只订阅模式（`cloud_function_urls` 未配，正常跳过）② 没设备注册（看 `push_tokens.json` 是否有值）③ Push Kit 频控/自分类权益（看 Push Kit 返回 code，非 `80000000`=失败） |
 | 断线 | 自动 5 秒重连 + 按高水位回补漏的消息（≥100 条会告警：超出的老消息去 App `GET /message` 看） |
 | App 状态条显示「实时（8s刷新）」而非「实时」 | App 的 WebSocket 直连被 **Gotify 自带的 Origin 校验**挡了——ArkTS 原生客户端会发非同源 Origin，Gotify 默认返 403，App 自动降级 8s 轮询兜底（**消息照收**，只是从秒到变 8s 内）。要即时推送：Gotify `config.yml` 设 `server.stream.allowedorigins: ['.*']`（合法正则，**不是 `*`**）+ `server.cors.alloworigins`，重启 Gotify。桥走 Python websockets 不发 Origin 不受影响；只有 App 的 ArkTS 客户端中招。详见 [gotify#372](https://github.com/gotify/server/issues/372)/[#580](https://github.com/gotify/server/issues/580) |
 
-## 推送模式 & 鉴权（已核实：服务账号 JWT，**非** client_id/secret）
-- 鸿蒙 NEXT Push Kit 服务端**官方推荐 = 服务账号 + RSA 私钥 JWT**（[push-jwt-token](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/push-jwt-token)）。本桥即此法，别改。
-- ⚠️ 别和 HMS Core（安卓）的 [`hms-push-serverdemo-python`](https://gitee.com/hms-core/hms-push-serverdemo-python) 混：那套是 `client_id/client_secret` + `/v1/{appId}/messages:send`，**鉴权和 API 版本都不同**。demo 只能参考消息体结构。
-- 对比：
+## 推送：桥调云函数，不直连 Push Kit（2026-07-07 架构变更）
+桥**不再持 `private.json`、不再签 JWT、不再直连 Push Kit**——改 HTTP POST 一个无状态云函数，函数持 private 干这些（private 锁云函数 → 桥可开源）。
+- **云函数**（Netlify，`hotifypushkit.netlify.app` 或 custom domain `hotify.lovesweet.online`）：签 PS256 JWT + 调 Push Kit v3 + 转发 code。纯协议管道（透传调用方 notification 对象，不构造）。详见 `CloudFuction/PushKit.md`。
+- **桥**：`send_to_huawei` 遍历 `cloud_function_urls` POST（fallback），body = `{token, notification, data, testMessage}`，拿 code 按码表分类（Delivered/DeadToken/SystemError）。
+- **鉴权（旧桥直连时的核实，现归云函数）**：鸿蒙 NEXT Push Kit = 服务账号 RSA 私钥签 PS256 JWT（**非** client_id/secret），JWT 直当 Bearer 调 `/v3/{project_id}/messages:send` + `push-type:0`。别和 HMS Core（安卓）的 `client_id/secret + /v1/{appId}/messages:send` 混。详见 task.md #2/#17 + PushKit.md §5。
 
-  | | HMS Core demo（安卓） | 本桥（鸿蒙 NEXT） |
-  |---|---|---|
-  | 凭据 | client_id + client_secret（字符串） | 服务账号 RSA 私钥（JSON） |
-  | 换 token | id/secret 直换 | 私钥签 JWT → 换 token |
-  | 推送 API | `/v1/{appId}/messages:send` | `/v3/{project_id}/messages:send` + `push-type:0` |
 
-- **RSA 私钥（`private.json`）从哪来**：华为开发者联盟 → 你的项目 →「用户与权限」/「项目设置」里找「**服务账号（Service Account）**」→ 创建 → **下载 JSON 密钥文件**（含 `private_key`/`key_id`/`sub_account`/`project_id`）→ 存成 `private.json` 放桥目录。开 Push Kit 能力 ≠ 创建服务账号，这是单独一步。
-
-## 完整推送（milestone 2）要做的
-1. AGC 建项目（`com.yourname.hotify`）→ 开通 Push Kit
-2. AGC→项目设置→常规→服务账号→新建→下载 `private.json` → 放本目录
-3. 桥 `TEST_MESSAGE=True`（已设，调测期绕频控）
+## 完整推送（已闭环，2026-07-07）
+桥端云函数链路已通（实测 80000000 × 2 设备）。清单：
+1. ✅ 云函数部署（Netlify，持 private 签 JWT 调 Push Kit）——见 `CloudFuction/PushKit.md` §9
+2. ✅ 桥配 `cloud_function_urls`（默认 Hotify 托管函数）+ `cloud_function_token`
+3. 桥 `TEST_MESSAGE=True`（调测期绕频控，正式改 False）
 4. 申「自分类权益」改服务/通讯类（锁屏）+ payload `category` 对齐；自用可先靠 `TEST_MESSAGE` + 手机手动开「锁屏通知」
 5. App 上报 push token（`POST 桥/register`）→ `push_tokens.json` 有值
-6. 跑桥 → 副机发条消息 → 鸿蒙锁屏应弹
+6. 跑桥 → 副机发条消息 → 鸿蒙锁屏弹
+
 
 ## 部署（生产拓扑）
 **桥和 Gotify 同机，各自 serve HTTPS，共用同一张证书**（各自端口）。手机走 https 触达两者；桥也走 https 连 Gotify——同一张证书、同一域名，校验通过。
@@ -109,5 +105,6 @@ Gotify WebUI（`https://<your-gotify-host>`）→ 登录 → **CLIENTS** 页 →
 - **持久化**：systemd / docker `restart=always` / Windows 任务计划或服务（防进程崩）。
 
 ---
+*2026-07-07：**架构变更**——private 移出桥、锁云函数（Netlify）；桥改 HTTP POST 云函数，不再签 JWT / 直连 Push Kit（实测 80000000 × 2 设备）。详见 `CloudFuction/PushKit.md` + `task.md` #17。*
 *更新：2026-06-29。`/register` 加固：gotify 配置改 **first-set wins**（首次 App 上报锁定写回 yaml，之后再报忽略，防公网抢首注改后端；要零赛跑就 yaml 预填）；push token 每次刷新；响应加 `device_known`/`ignored_gotify` 给 App 反馈。*
 *2026-06-28：脊柱模式实测 OK（连真实 Gotify，id=2814，订阅 /stream 正常）；FAQ「实时(8s刷新)」降级 = Gotify Origin 校验（`allowedorigins` 修法）。*

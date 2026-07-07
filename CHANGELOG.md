@@ -10,7 +10,7 @@
 - **`gotify_url_local`（同机覆盖）**：桥和 Gotify 同机时填 `https://127.0.0.1:<端口>`，桥走 localhost 连 Gotify（覆盖 App 上报的域名），免 NAT hairpin / 代理绕路。
 - **自动探测同机 Gotify**：`gotify_url_local` 留空时，桥从 App 上报的域名取端口，自动探 `https://127.0.0.1:<端口>/version`，Gotify 应答就自动填 `gotify_url_local`（重试 3 次应对瞬时波动；成功才标记 done，失败不永久放弃）。
 - **localhost TLS 跳过证书校验**：连 `127.0.0.1` / `localhost` 的 TLS Gotify 时自动跳过主机名校验（域名证书在 127.0.0.1 上对不上，本地回环可信）。
-- **首次启动自动建配置**：没有 `bridge_config.yaml` 时，自动从 `bridge_config.example.yaml` 复制一份（带注释），部署者直接改。
+- **首次启动自动建配置**：没有 `bridge_config.yaml` 时，自动从 `_CFG_DEFAULTS` 生成一份（带头部注释），部署者直接改（无 example 模板文件——注释内嵌生成逻辑）。
 - **双语 README**：默认中文（`README.md`），英文版 `README.en.md`，顶部互相链接。
 - **`/register` 响应字段**：返 `device_known`（UUID 是否已登记过）/ `gotify_set`（本次是否首注成功）/ `ignored_gotify`（桥已配置、本次 gotify 被忽略），App 据此给反馈。
 - **订阅类字样标注**：转发时给标题加 `订阅:` 前缀（符合华为 Push Kit"订阅"类消息分类的标注要求，见 push-apply-right；如 `订阅:短信验证码`）。新配置 `subscribe_label`（默认 `true`=标注；`false`=不标注）。

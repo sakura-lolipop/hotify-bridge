@@ -2,6 +2,7 @@
 private.json
 *_private.json
 *private.json
+private.md
 bridge_config.json
 bridge_config.yaml
 push_tokens.json
