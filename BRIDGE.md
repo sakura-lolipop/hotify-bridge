@@ -104,6 +104,11 @@ Gotify WebUI（`https://<your-gotify-host>`）→ 登录 → **CLIENTS** 页 →
 - **本机调试**：终端常驻 `python -u gotify_pushkit_bridge.py`。
 - **持久化**：systemd / docker `restart=always` / Windows 任务计划或服务（防进程崩）。
 
+## 端口策略（/register 端口）
+- **测试 / 正式各一个目录**（各跑一个桥实例），各自 `bridge_config.yaml` 显式设 `register_port`：测试 25238 / 正式 8080（Gotify 占 80+443 时用 8080）。
+- **register_port 留空** → 默认 25238。
+- 一份代码，两份配置（per 目录）。
+
 ---
 *2026-07-07：**架构变更**——private 移出桥、锁云函数（Netlify）；桥改 HTTP POST 云函数，不再签 JWT / 直连 Push Kit（实测 80000000 × 2 设备）。详见 `CloudFuction/PushKit.md` + `task.md` #17。*
 *更新：2026-06-29。`/register` 加固：gotify 配置改 **first-set wins**（首次 App 上报锁定写回 yaml，之后再报忽略，防公网抢首注改后端；要零赛跑就 yaml 预填）；push token 每次刷新；响应加 `device_known`/`ignored_gotify` 给 App 反馈。*

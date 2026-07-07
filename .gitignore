@@ -20,3 +20,6 @@ test_local/data/
 # === 临时 / 日志 ===
 *.log
 .env
+
+# === cloud_function_urls fetch 缓存（本地生成,不入库）===
+cloud_function_urls.cache.txt

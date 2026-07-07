@@ -1,0 +1,3 @@
+# Hotify 推送服务入口（一行一个 URL）。桥启动 fetch 此文件 → cloud_function_urls。
+# 改这里 → 桥下次启动拉到新的（不动桥代码）。ghproxy.com 优先（国内加速）→ 直连 fallback。
+https://hotifypushkit.netlify.app/api/push
