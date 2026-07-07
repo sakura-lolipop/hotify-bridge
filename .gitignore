@@ -34,3 +34,4 @@ go/gotify-bridge.exe
 go/gotify-bridge
 go/*.test
 go/*.out
+go/dist/
