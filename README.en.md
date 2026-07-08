@@ -47,7 +47,7 @@ Gotify config is read in priority order: **app upload** (`POST /register`, persi
 
 | Where | Keys | Notes |
 |---|---|---|
-| `bridge_config.yaml` | `gotify_url`, `gotify_token` (dynamic, app-uploaded) **+** `gotify_url_local`, `register_port`, `tls_*` (static) **+** `cloud_function_urls`, `cloud_function_token` (push-service endpoint) | Auto-generated on first run (no example template). **gitignored — never commit your real token.** `register_port` empty → default 25238; `tls_*` empty → `/register` is plain HTTP; `cloud_function_urls` empty → push skipped (Gotify subscribe only). |
+| `bridge_config.yaml` | `gotify_url`, `gotify_token` (dynamic, app-uploaded) **+** `gotify_url_local`, `register_port`, `tls_*` (static) **+** `cloud_function_urls`, `cloud_function_token` (push-service endpoint) | Auto-generated on first run (no example template). **gitignored — never commit your real token.** `register_port` empty → default 8080; `tls_*` empty → `/register` is plain HTTP; `cloud_function_urls` empty → push skipped (Gotify subscribe only). |
 | Env | `GOTIFY_HTTP_URL`, `GOTIFY_CLIENT_TOKEN` | Headless fallback for the dynamic gotify fields only |
 | (private moved out of bridge) | — | private lives in the **cloud function** (Netlify), not the bridge → bridge is open-sourceable. See `repourl.md` / `CloudFuction/PushKit.md`. |
 | `push_tokens.json` | device push tokens | Auto-managed from app uploads. gitignored. |

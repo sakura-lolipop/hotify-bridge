@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -24,6 +25,15 @@ var cfTxtSources = []string{
 	"https://raw.githubusercontent.com/sakura-lolipop/hotify-bridge/main/cloud_function_urls.txt",
 }
 const cfTxtCache = "cloud_function_urls.cache.txt"
+
+// cfYamlOverride — bridge_config.yaml 显式填了 cloud_function_urls（手动 override）。
+// true → 不走 txt/cache 自动管理（启动跳过 initCfURLs、后台不刷新），尊重部署者手填。
+// initConfig 在 applyParsedConfig 后判定（cfg.CloudFunctionURLs 非空 = yaml 填了）。
+var cfYamlOverride bool
+
+// cfRefreshInterval — 后台 fetch cloud_function_urls.txt 的间隔（cache-first 启动之上的运行时刷新）。
+// 1h：云函数 URL 变动改 txt，桥常驻最多 1h 跟上、免重启；网络挂则保留当前不动。
+const cfRefreshInterval = 1 * time.Hour
 
 // autodetectDoneFor — 已【成功】探到同机 Gotify 的 gotify_url（去重）；失败不标记→下次再探。
 var autodetectDoneFor atomic.Value // 存 string
@@ -279,8 +289,28 @@ func autodetectLocalGotify() {
 	// 都没探到：不标记 done，下次 App 上报/启动再探
 }
 
+// initCfURLs — 启动配 cloud_function_urls（cache-first；仅 yaml 未 override 时调）。
+// 优先级：热启动有 cache → 秒起用 cache（不等网络，后台 refreshCfURLs 取最新）
+//        > 冷启动无 cache → 同步 fetch 建缓存（首次必等网络；失败则 cfg 空，后台重试补）。
+// yaml override（cfYamlOverride=true）由 initConfig 拦截，不进此函数。
+func initCfURLs() {
+	// ① 热启动：有 cache 直接用（秒起，不等网络；后台刷新最新）
+	if data, err := os.ReadFile(cfTxtCache); err == nil {
+		if parsed := parseCfTxt(string(data)); len(parsed) > 0 {
+			cfgMu.Lock()
+			cfg.CloudFunctionURLs = parsed
+			cfgMu.Unlock()
+			log.Printf("[配置] ✓ 热启动用 cache（%d 个 URL），后台刷新最新", len(parsed))
+			return
+		}
+	}
+	// ② 冷启动：无 cache → 同步 fetch 建缓存（首次必等网络；fetchCfURLsFromTxt 成功写 cache，失败 log 报错、cfg 留空）
+	fetchCfURLsFromTxt()
+}
+
 // fetchCfURLsFromTxt — cloud_function_urls 空时 → fetch cloud_function_urls.txt（GitHub raw，ghproxy.com 优先国内加速）
 // → 按行解析 URL。拉到 → 缓存本地（全挂时用缓存）。已配（bridge_config override）→ 跳过。
+// 冷启动用（initCfURLs 无 cache 时调）；后台刷新用 refreshCfURLs（只更新有变化的）。
 func fetchCfURLsFromTxt() {
 	cfgMu.RLock()
 	urls := cfg.CloudFunctionURLs
@@ -340,4 +370,74 @@ func parseCfTxt(content string) []string {
 		urls = append(urls, ln)
 	}
 	return urls
+}
+
+// refreshCfURLs — 单次后台刷新：fetch txt → 与当前 cfg 比 → 变了才更新 cfg + cache（加锁）。
+// fetch 失败 / 内容相同 → 不动 cfg（保留当前，避免无谓写 + 抖动）。
+func refreshCfURLs() {
+	client := &http.Client{Timeout: 8 * time.Second}
+	for _, src := range cfTxtSources {
+		resp, err := client.Get(src)
+		if err != nil {
+			continue
+		}
+		if resp.StatusCode != 200 {
+			resp.Body.Close()
+			continue
+		}
+		content, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		parsed := parseCfTxt(string(content))
+		if len(parsed) == 0 {
+			continue
+		}
+		cfgMu.RLock()
+		cur := cfg.CloudFunctionURLs
+		cfgMu.RUnlock()
+		if cfListsEqual(cur, parsed) {
+			return // 无变化，不动
+		}
+		cfgMu.Lock()
+		cfg.CloudFunctionURLs = parsed
+		cfgMu.Unlock()
+		_ = os.WriteFile(cfTxtCache, content, 0644)
+		tag := "直连"
+		if strings.Contains(src, "ghproxy.com") {
+			tag = "ghproxy"
+		}
+		log.Printf("[配置] ↻ 后台刷新 cloud_function_urls（%s）→ %v", tag, parsed)
+		return
+	}
+	log.Print("[配置] ↻ 后台刷新 fetch 全挂，保留当前 cloud_function_urls")
+}
+
+// refreshCfURLsPeriodically — 后台 goroutine：定期 fetch txt 刷新（cache-first 之上的运行时跟上）。
+// 仅 yaml 未 override 时由 main 启动（cfYamlOverride=false）。立即刷一次 + 每 cfRefreshInterval；随 ctx.Done 退出。
+// 热更新对 push 安全：sendToHuawei 入口 RLock 拷出 slice header 再遍历，refresh 替换 cfg.CloudFunctionURLs
+//   整体（新 slice），旧 slice 完整、本轮推送跑完不受影响（下一轮 sendToHuawei 才读新值）。
+func refreshCfURLsPeriodically(ctx context.Context) {
+	refreshCfURLs() // 启动后立即刷一次（冷启动 cache 起来的，这里取最新）
+	ticker := time.NewTicker(cfRefreshInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			refreshCfURLs()
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// cfListsEqual — 顺序敏感比较（txt 行序即 fallback 顺序，顺序变了也算更新）。
+func cfListsEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

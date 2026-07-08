@@ -17,6 +17,8 @@ Python→Go 重写（CP0-CP5），`go/` 子目录（Python 留 repo 根作 fallb
 ### Changed
 - **BRIDGE.md 加「Go 版（推荐）vs Python（fallback）」章节**：源码/构建/依赖/运行/配置对比表 + Go 优势 + 线兼容已验 + Windows Defender 排除项提醒（新编 Go exe 可能被误杀）。
 - **真机验收（CP5）**：订阅远程 Gotify（`wss://push.smgwy.com:25234`）→ 收消息 → 推云函数 → Push Kit `80000000` → 手机收通知 → **点通知 App 滚到对应消息**（★ hazard 1 ts 端到端 killer 验过：ts 从 Gotify→桥→云函数→Push Kit→App `m.date===ts` 精确反查全程没坏）+ 干净 UTF-8 中文不坏。Go 桥线兼容端到端 VERIFIED。
+- **Go 默认 register_port 25238 → 8080（2026-07-08）**：公开发布版默认 8080（避开 Gotify 常占的 80/443，对部署者友好）；自用/测试在 `bridge_config.yaml` 显式 `register_port: 25238` 覆盖（一份代码 per 目录，无需两份源码）。Python fallback 默认仍 25238（未改）。
+- **cloud_function_urls 自动检测（cache-first + 后台刷新，2026-07-08）**：留空 = 自动管理——启动 cache-first（有 cache 秒起不等网络 / 冷启动 fetch 建缓存）+ 后台立即 fetch + 每 1h 刷新 txt 热更新（加锁，对 push 安全）。云函数变动只改仓库 `cloud_function_urls.txt`，桥常驻免重启跟上。填了 = 手动 override（不走自动）。Python fallback 仍是启动单次 fetch（未改）。
 
 ---
 
@@ -25,9 +27,9 @@ Python→Go 重写（CP0-CP5），`go/` 子目录（Python 留 repo 根作 fallb
 ### Added
 - **0-config 自动探测（2026-07-07）**：① 证书从 Gotify `config.yml`（`ssl.certfile`/`ssl.keyfile`）或 `<config_dir>/certs/` glob（*.cer/*.pem/*.crt + *.key）自动发现，5 种情况显式 print；② Gotify 端口探 443(HTTPS)→80(HTTP)→config-port→gotify_url-port（**不信任 config 80**——Gotify 302→443 不再降级；127.0.0.1 始终探避免 hairpin NAT）；③ private-IP（127/10.x/172.16-31/192.168）跳过 TLS 主机名校验（LAN/同机可信）；④ `cloud_function_urls` 从 `cloud_function_urls.txt` fetch（ghproxy.com 优先→直连→本地 cache，一行一 URL，零配置外部管理）。
 - **`cloud_function_urls.txt` 外挂（2026-07-07）**：一行一个推送服务入口 URL，桥启动 fetch。改这里 → 桥下次启动拉新（不动桥代码）。仓库内已填默认 Hotify 托管函数。
-- **端口策略 per-config（2026-07-07）**：每部署目录 `bridge_config.yaml` 显式设 `register_port`（测试 25238 / 正式 8080，Gotify 占 80+443 时用 8080）；留空 → 默认 25238。一份代码两份配置（per 目录）。详见 `BRIDGE.md`「端口策略」。
+- **端口策略 per-config（2026-07-07；默认值 2026-07-08 改）**：默认 8080（正式，`register_port` 留空即用，避开 Gotify 常占的 80/443）；测试目录 `bridge_config.yaml` 显式设 `register_port: 25238`。一份代码两份配置（per 目录，无需两份源码）。详见 `BRIDGE.md`「端口策略」。
 - **`/register` TLS**：`tls_cert_file` / `tls_key_file` 填证书路径 → `/register` 走 https；留空 → 明文 http（启动 `⚠️ 降级明文 http` 提醒）。与 Gotify 共用同一张域名证书。
-- **`register_port` 可配置**：留空 → 默认 25238（启动 `⚠️ 用默认端口` 提醒）；填了用填的。
+- **`register_port` 可配置**：留空 → 默认 8080（启动 `⚠️ 用默认端口` 提醒）；填了用填的。
 - **`gotify_url_local`（同机覆盖）**：桥和 Gotify 同机时填 `https://127.0.0.1:<端口>`，桥走 localhost 连 Gotify（覆盖 App 上报的域名），免 NAT hairpin / 代理绕路。
 - **自动探测同机 Gotify**：`gotify_url_local` 留空时，桥从 App 上报的域名取端口，自动探 `https://127.0.0.1:<端口>/version`，Gotify 应答就自动填 `gotify_url_local`（重试 3 次应对瞬时波动；成功才标记 done，失败不永久放弃）。
 - **localhost TLS 跳过证书校验**：连 `127.0.0.1` / `localhost` 的 TLS Gotify 时自动跳过主机名校验（域名证书在 127.0.0.1 上对不上，本地回环可信）。

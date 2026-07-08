@@ -49,7 +49,7 @@ Gotify 配置 = **first-set wins**（照 SSH 主机指纹 TOFU）：桥【未配
 
 | 位置 | 键 | 说明 |
 |---|---|---|
-| `bridge_config.yaml` | `gotify_url`、`gotify_token`（**首次 App 上报锁定** / 或 yaml 预填）**+** `gotify_url_local`、`register_port`、`tls_*`（静态）**+** `cloud_function_urls`、`cloud_function_token`（推送服务入口） | 首启自动生成（无 example 模板）。**gitignore——别提交真 token。** `register_port` 空 → 默认 25238；`tls_*` 空 → `/register` 走明文 http；`cloud_function_urls` 空 → 跳过推送（只订阅 Gotify）。 |
+| `bridge_config.yaml` | `gotify_url`、`gotify_token`（**首次 App 上报锁定** / 或 yaml 预填）**+** `gotify_url_local`、`register_port`、`tls_*`（静态）**+** `cloud_function_urls`、`cloud_function_token`（推送服务入口） | 首启自动生成（无 example 模板）。**gitignore——别提交真 token。** `register_port` 空 → 默认 8080；`tls_*` 空 → `/register` 走明文 http；`cloud_function_urls` 空 → 跳过推送（只订阅 Gotify）。 |
 | 环境变量 | `GOTIFY_HTTP_URL`、`GOTIFY_CLIENT_TOKEN` | 仅动态 gotify 字段的 headless 兜底 |
 | （private 已移出桥） | — | private 锁在**云函数**（Netlify），桥不含 → 桥可开源。见 `repourl.md` / `CloudFuction/PushKit.md`。 |
 | `push_tokens.json` | 设备 push token | App 上报自动管理。gitignore。 |

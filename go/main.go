@@ -52,5 +52,9 @@ func main() {
 		defer wg.Done()
 		keepSubscribed(ctx)
 	}()
+	// cloud_function_urls 后台刷新（仅 yaml 未 override；cache-first 启动之上运行时跟上 txt 变化）
+	if !cfYamlOverride {
+		go refreshCfURLsPeriodically(ctx)
+	}
 	wg.Wait()
 }

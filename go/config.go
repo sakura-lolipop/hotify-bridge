@@ -14,12 +14,12 @@ const (
 	bridgeConfigFile     = "bridge_config.yaml"
 	pushTokensFile       = "push_tokens.json"
 	subscribeStatusFile  = "subscribe_status.json"
-	registerPortDefault  = 25238 // register_port 留空 → 此值（测试/正式各目录 yaml 显式设）
+	registerPortDefault  = 8080 // register_port 留空 → 此值（公开发布默认 8080，避开 Gotify 常占的 80/443；自用/测试在 yaml 显式设 register_port 覆盖）
 )
 
 // ──────────────────────────── Config（对应 Python _cfg）────────────────────────────
 // 一个 struct 装两类：静态项（部署者填，启动读）+ 动态项（gotify_*，App 运行时首注上报、写回锁定）。
-// register_port 故意不在 cfgDefaults（读 ad-hoc，留空→默认 25238，且 saveBridgeConfig 不碰它）。
+// register_port 故意不在 cfgDefaults（读 ad-hoc，留空→默认 8080，且 saveBridgeConfig 不碰它）。
 type Config struct {
 	// gotify（首注锁定动态项）
 	GotifyURL      string // normalize 后（纯端口→http://127.0.0.1:port）
@@ -32,7 +32,7 @@ type Config struct {
 	RegisterPort     string // 留空→registerPortDefault
 	SubscribeLabel   string // "true"/"false"（字符串，真值集 {true,1,yes,on}）
 	// 推送服务
-	CloudFunctionURLs  []string // 空→CP4 fetch cloud_function_urls.txt（ghproxy 优先）
+	CloudFunctionURLs  []string // yaml 填=override；空→cache-first（热启动用 cache/冷启动 fetch txt）+ 后台每 h 刷新
 	CloudFunctionToken string   // AUTH_TOKEN；留空=服务侧没开鉴权（不发 Authorization 头）
 	// 运行时探测（不入 yaml；CP4 填）
 	GotifyConfigPort int
@@ -208,7 +208,7 @@ gotify_token: %s
 # 桥连 Gotify 的本地地址，覆盖上面的 gotify_url。同机 TLS Gotify 填 https://127.0.0.1:端口（自动跳过证书校验、免 hairpin）；留空→用 gotify_url
 gotify_url_local: %s
 
-# /register 监听端口。留空→默认 25238（启动 ⚠️ 提醒）；填了用填的
+# /register 监听端口。留空→默认 8080（启动 ⚠️ 提醒）；自用/测试填 25238 等 override
 register_port:
 
 # Gotify config.yml 路径（留空→自动探 ../gotify/config.yml 等同机路径）。桥启动读它自动加载证书 + Gotify 端口（0 配置）。
@@ -222,7 +222,9 @@ tls_key_file: %s
 subscribe_label: %s
 
 # 推送服务入口（桥不直连 Push Kit，HTTP POST 推送服务；private 锁在服务里）。
-# 默认 Hotify 托管函数（hotifypushkit.netlify.app/api/push），零配置直接用。自托管改这里（JSON 数组，可多个 fallback）。
+# 留空 = 自动管理：cache-first 启动（热启动用本地 cache 秒起 / 冷启动 fetch cloud_function_urls.txt）+ 后台每 h 刷新。
+#   云函数变动只改仓库 cloud_function_urls.txt，桥常驻最多 1h 跟上、免重启。
+# 填了 = 手动 override（不走自动管理，改 URL 改这里；JSON 数组可多个 fallback）。
 cloud_function_urls: %s
 
 # 推送服务 AUTH_TOKEN（防爬虫，非防推送）。默认 hotifypushkit（managed）；自托管填你服务侧配的；留空=服务侧没开鉴权。
@@ -261,7 +263,11 @@ func initConfig() {
 	// 0-config 自动探测（CP4）
 	probeGotifyConfig()      // 探 Gotify config.yml → 自动证书 + 端口 hint
 	autodetectLocalGotify()  // 留空则探同机 Gotify（/version probe）
-	fetchCfURLsFromTxt()     // cloud_function_urls 空 → fetch .txt（ghproxy 优先 → 直连 → 缓存）
+	// cloud_function_urls：yaml 填了 = 手动 override（不动）；留空 = txt/cache 自动管理（cache-first + 后台刷新）
+	cfYamlOverride = len(cfg.CloudFunctionURLs) > 0
+	if !cfYamlOverride {
+		initCfURLs()
+	}
 }
 
 // applyParsedConfig — 用解析出的 map 覆盖 cfg 静态项（对应 Python _cfg.update(p) 的静态部分）。

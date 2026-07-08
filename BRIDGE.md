@@ -55,9 +55,9 @@ python -u gotify_pushkit_bridge.py                       # -u 无缓冲，日志
 | 项 | 在哪 | 说明 |
 |---|---|---|
 | `gotify_url` / `gotify_token` | `bridge_config.yaml`（**首次 App 上报锁定** / yaml 预填）> env 兜底 | **必填**。Gotify 地址 + client token（读消息/订阅流）。首次 App 上报后锁定，之后再报桥忽略（防公网抢首注改后端）。见下方「client token 怎么拿」 |
-| `register_port` | `bridge_config.yaml`（静态，部署者填） | `/register` 监听端口；**留空 → 默认 25238** |
+| `register_port` | `bridge_config.yaml`（静态，部署者填） | `/register` 监听端口；**留空 → 默认 8080**（自用/测试显式设 `25238` 覆盖） |
 | `tls_cert_file` / `tls_key_file` | `bridge_config.yaml`（静态，部署者填） | 填了 → `/register` 走 https；空 → 明文 http（仅 LAN/调试）。与 Gotify 同一张域名证书 |
-| `cloud_function_urls` / `cloud_function_token` | `bridge_config.yaml` | 推送服务入口 URL（JSON 数组，可多个 fallback）/ AUTH_TOKEN。private 锁云函数、**不入桥**。留空=只订阅模式（跳过推送，不崩）。见 repourl.md |
+| `cloud_function_urls` / `cloud_function_token` | `bridge_config.yaml` | 推送服务入口 URL（JSON 数组，可多个 fallback）/ AUTH_TOKEN。private 锁云函数、**不入桥**。`cloud_function_urls` **留空=自动管理**（cache-first 启动 + 后台每 h fetch `cloud_function_urls.txt`）；fetch 全挂且无 cache=只订阅模式（跳过推送，不崩）。见下「cloud_function_urls 自动检测」 |
 | `push_tokens.json` | 自动生成 | App 上报的 push token 存这里，别手改 |
 | `TEST_MESSAGE` | 源码常量 | 已设 `True`，调测期绕 MARKETING 频控（每项目 1000 条/天）；正式改 `False` |
 | `NOTIFY_CATEGORY` | 源码常量 | 推送类目，须与申到的自分类权益一致（默认 `SUBSCRIPTION`） |
@@ -121,9 +121,15 @@ Gotify WebUI（`https://<your-gotify-host>`）→ 登录 → **CLIENTS** 页 →
 - **持久化**：systemd / docker `restart=always` / Windows 任务计划或服务（防进程崩）。
 
 ## 端口策略（/register 端口）
-- **测试 / 正式各一个目录**（各跑一个桥实例），各自 `bridge_config.yaml` 显式设 `register_port`：测试 25238 / 正式 8080（Gotify 占 80+443 时用 8080）。
-- **register_port 留空** → 默认 25238。
+- **默认 8080**（register_port 留空 → 8080）：面向公网部署者，避开 Gotify 常占的 80/443。
+- **测试 / 自用 25238**：测试目录 `bridge_config.yaml` 显式设 `register_port: 25238`（一份代码 per 目录覆盖，无需两份源码）。
 - 一份代码，两份配置（per 目录）。
+
+## cloud_function_urls 自动检测（cache-first + 后台刷新）
+桥不直连 Push Kit，HTTP POST 云函数。`cloud_function_urls`（推送服务入口）两种模式：
+- **留空 = 自动管理**：① 启动 cache-first——有本地 cache（`cloud_function_urls.cache.txt`）秒级用 cache 起、不等网络；无 cache（首次冷启动）同步 fetch 仓库 `cloud_function_urls.txt`（ghproxy→直连）建缓存。② 启动后立即后台 fetch 一次 + 每 1h 刷新，txt 变了就热更新 `cfg.CloudFunctionURLs`（加锁）+ 刷 cache，常驻桥免重启跟上云函数变动。fetch 全挂则保留当前不动。
+- **填了 = 手动 override**：不走自动管理，改 URL 改这里（JSON 数组可多个 fallback）。
+- 改仓库 `cloud_function_urls.txt`（一行一 URL）→ 桥常驻最多 1h 跟上、不动桥代码/yaml。
 
 ---
 *2026-07-07：**架构变更**——private 移出桥、锁云函数（Netlify）；桥改 HTTP POST 云函数，不再签 JWT / 直连 Push Kit（实测 80000000 × 2 设备）。详见 `CloudFuction/PushKit.md` + `task.md` #17。*
