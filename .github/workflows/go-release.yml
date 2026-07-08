@@ -1,0 +1,46 @@
+name: Go Build & Release
+
+# Go 桥 release CI —— 补 release.yml(只打 Python PyInstaller)的缺位。
+# 打 tag (v*) → 单 ubuntu runner 跑 go test + build-all.sh 交叉编译 5 平台静态二进制 → 塞进 GitHub Release。
+#   纯 Go (CGO_ENABLED=0) → 不用像 Python 那样每平台一个 runner，linux 一机交叉编译全产出（省 2 个 runner）。
+# workflow_dispatch → 只构建 + 上传 artifact，不发 Release（先测构建通不通，同 release.yml）。
+# 产物见 go/build-all.sh：go/dist/gotify-bridge-{linux-amd64,linux-arm64,windows-amd64.exe,darwin-amd64,darwin-arm64}。
+# 与 release.yml(Python) 同 tag 触发：两 workflow 各自往同一 Release 挂附件，softprops/action-gh-release 幂等不冲突。
+#   go test 用 httptest 本地 mock（push_test/subscriber_test），不依赖外部服务，CI 安全。
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write   # 建 Release + 上传附件需要（同 release.yml）
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod          # 读 go.mod 的 `go 1.22`，CI 跟 go.mod 走、不漂移
+          cache-dependency-path: go/go.sum    # go.sum 在 go/ 子目录（非 repo 根），显式指给 setup-go 算缓存键
+      - name: Test
+        working-directory: go
+        run: go test ./...
+      - name: Build（build-all.sh 交叉编译 5 平台）
+        working-directory: go
+        run: bash build-all.sh     # 脚本内 cd go/，产物落 go/dist/
+      - name: Upload artifact（手动触发测试用，Actions 页可下）
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-bridge-binaries
+          path: go/dist/*
+      - name: Attach to Release（打 tag 触发）
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: go/dist/*
+          generate_release_notes: true   # 同 release.yml；release 已存在时只挂附件、不重建
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
