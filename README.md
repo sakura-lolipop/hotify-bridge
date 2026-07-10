@@ -2,7 +2,7 @@
 
 🌐 **中文** | [English](README.en.md) · 📄 [更新日志](CHANGELOG.md)
 
-> Gotify → 华为 Push Kit 转发桥，服务于 **[Hotify](#)** —— 一个 HarmonyOS NEXT 通知转发客户端。
+> Gotify → 华为 Push Kit 转发桥，服务于 **Hotify** —— HarmonyOS NEXT 通知转发客户端（App 上架后这里加应用市场链接）。
 > 订阅 Gotify 消息流，把每条消息经华为 Push Kit 推到你的鸿蒙**锁屏**——即使 App 没开也能收到。
 
 ```
@@ -21,18 +21,24 @@
 - 按 token 逐台投递，失效 token 自动清理（bark 式）。
 
 ## 🔗 与 Gotify 协作
-本桥是原创 Python 代码，对接 [Gotify](https://github.com/gotify/server) 服务端（MIT）。它**不打包** Gotify——请单独运行 Gotify。Hotify 复用 Gotify 的协议、存储和流；只是最后一公里投递从 FCM 换成了华为 Push Kit。
+本桥 **Go 重写（CP0-CP5，纯 Go 静态二进制，免运行时依赖）**，Python 版（`gotify_pushkit_bridge.py`）留作 fallback。对接 [Gotify](https://github.com/gotify/server) 服务端（MIT），**不打包** Gotify——请单独运行 Gotify。Hotify 复用 Gotify 的协议、存储和流；只是最后一公里投递从 FCM 换成了华为 Push Kit。
 
 ## 📋 前置
-- Python 3.8+
+- **Go 桥（主线）**：预编译二进制（免依赖）或 Go 1.22+ 源码编译
 - 一个运行中的 [Gotify](https://github.com/gotify/server) 服务端（自托管）
 - 推送服务入口 `cloud_function_urls`：默认用 Hotify 托管函数（无需自建）；自部署见 `CloudFuction/PushKit.md`（private 锁云函数、不入桥）
-- Python 依赖：`pip install websockets`
+- **Python fallback（可选）**：Python 3.8+ + `pip install websockets`（跑 `gotify_pushkit_bridge.py`；Go 不可用时备选）
 
 ## 🚀 快速开始
 ```bash
-git clone <this-repo> hotify-bridge && cd hotify-bridge
-pip install websockets
+# 方式 A（推荐）：下载预编译二进制（Releases，免依赖）
+#   gotify-bridge-<os>-<arch> → 运行：
+./gotify-bridge   # 首启自动生成 bridge_config.yaml（默认值 + 注释）
+
+# 方式 B：源码编译（Go 1.22+）
+git clone <this-repo> hotify-bridge && cd hotify-bridge/go
+go build -o gotify-bridge .          # 单平台；或 bash build-all.sh 出全平台 dist/
+./gotify-bridge                       # 首启自动生成 bridge_config.yaml
 
 # 1) Gotify CLIENT token（读消息 / 订阅 /stream）
 #    Gotify WebUI → CLIENTS → Create Client → 复制 Token
@@ -40,8 +46,9 @@ pip install websockets
 # 2) 推送服务入口 cloud_function_urls：用 Hotify 托管函数（默认）或填自托管的
 #    （private 锁云函数、不入桥——见 repourl.md / CloudFuction/PushKit.md）
 
-python -u gotify_pushkit_bridge.py   # 首启自动生成 bridge_config.yaml（默认值 + 注释，无 example 模板）
 # → 编辑 bridge_config.yaml：必填 gotify_token + cloud_function_urls，重启
+
+# Python fallback（Go 不可用）：pip install websockets && python -u gotify_pushkit_bridge.py
 ```
 
 ## ⚙️ 配置
