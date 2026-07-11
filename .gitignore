@@ -19,8 +19,8 @@ build/
 dist/
 *.spec
 
-# === 本地自测 Gotify 实例数据 ===
-test_local/data/
+# === 本地自测 Gotify 实例沙箱（整个 test_local/：config/selftest/USAGE/push_lockscreen 含 token·内网IP·设备uuid，全本地不入公开仓）===
+test_local/
 
 # === 临时 / 日志 ===
 *.log
