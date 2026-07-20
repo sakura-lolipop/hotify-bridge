@@ -648,7 +648,11 @@ def send_to_huawei(title, message, priority=4, extras=None, ts="", notify_id=0):
         }
         if notify_id_int:
             notification["notifyId"] = notify_id_int
-        data_obj = dict(extras or {})   # 顶层 data 仅透传 extras（到达订阅路用）；控制数据已在 clickAction.data
+        data_obj = dict(extras or {})   # 顶层 data 透传 extras + ts（B 方案：ts 走 data，云函数 message.data 透传）
+        # ts 反查（B 方案）：塞 data_obj → 云函数 message.data 透传 → HMS 点通知 Intent extras 带 ts → app getString("ts")。
+        #   鸿蒙端 ts 走 clickAction.data（line 647，click 平铺 want.parameters）；安卓端 ts 走 data（这里）。
+        if ts:
+            data_obj["ts"] = str(ts)
         body = {
             "token": tok,
             "notification": notification,
