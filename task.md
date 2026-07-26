@@ -3,14 +3,14 @@
 > 历史里程碑看 [task-archive.md](./task-archive.md)。本文件保持精简：>300 行或里程碑完成时拆，历史归 task-archive.md。
 
 ## 当前状态
-**v1.1.1 已发版**（含"重启后回补全量重放"修复）。**cloud_function_urls Gitee-fetch 修复已提交 main，待发 v1.1.2**（PandaSoos 反馈的"空配收不到推送"，见 [bug.md](./bug.md) #2）。Docker 一键（install.sh + ACR）+ 各平台 Go 二进制 + 小白 README 都就位。
+**v1.1.2 已发版**（含去重重放 + cloud_function_urls Gitee-fetch 两修复；GitHub Release + GHCR/ACR 镜像 + Gitee 二进制全齐）。v1.1.1 曾短暂发布后被 v1.1.2 取代移除。Docker 一键（install.sh + ACR）+ compose（SSH-light，走 env）+ 各平台 Go 二进制 + 小白 README 都就位。
 
 ## 下一步 / 待办
 - [x] **v1.1.1（去重重放修复）** ✅ 已发。
 - [x] **v1.1.2** ✅ 已发（cloud_function_urls Gitee-fetch 修复 + 去重重放修复；GitHub Release + GHCR/ACR 镜像 + Gitee 二进制全齐）。
 - [ ] **App「部署指引」外链改指 Gitee**：HotifyNEXT App 仓里那条链接，从 GitHub README 改成 `gitee.com/sakura-lolipop/hotify-bridge/blob/main/docker.md`（国内可达）。不在本仓改。
 - [ ] **GHCR 翻 Public（可选/低优先）**：仅海外用户需要；Hotify 国内为主、ACR 已覆盖，可跳过，或干脆删 `docker-release.yml` 的 ghcr job 只留 ACR。
-- [ ] **Gitee 令牌轮换**：之前在对话里露过的旧令牌作废，去 gitee→私人令牌重建；GitHub 的 `GITEE_TOKEN` secret 也换成新的。
+- [~] ~~Gitee 令牌轮换~~（用户选择不轮换——令牌在对话露过几次、风险已知，不再催）。
 - [ ] **下次发版流程**（备忘）：改代码 → `git push origin`（dual-push 自动 GitHub+Gitee）→ 打 `v*` tag（触发 go-release/release/docker-release）→ 本地 `GITEE_TOKEN=新令牌 bash scripts/gitee-upload.sh vX.Y.Z` 传 Gitee 二进制。
 
 > 上面"下一步"是我按这轮收尾推断的清单，实际路线你改。
