@@ -74,7 +74,7 @@ docker restart hotify-bridge
 
 📖 完整部署指南（NAS GUI、Gotify 容器寻址、公网 HTTPS、排错）见 [`docker.md`](./docker.md)。
 
-或用仓库自带的 [`docker-compose.yml`](./docker-compose.yml)：`docker compose up -d`。
+或用仓库自带的 [`docker-compose.yml`](./docker-compose.yml)——**v1.1.2+ 走 env**（`.env` 填 `GOTIFY_HTTP_URL`/`GOTIFY_CLIENT_TOKEN`，免 SSH 编辑配置），`docker compose up -d` 即可；更新 `pull` + `up -d`（`./data` 卷保留配置/水位，不重配）。详见 [docker.md](./docker.md)。
 
 > **⚠️ Gotify 地址在容器里语义不同（Docker 部署最容易踩的坑）**：桥把「只填端口」当成同机 `127.0.0.1`，但**容器里 `127.0.0.1` 是容器自己**，够不到 Gotify。所以 `bridge_config.yaml` 的 `gotify_url` 按拓扑填：
 > - Gotify 在**同机另一容器**：和桥放同一 docker network，填 `http://<gotify 容器名>:<端口>`（如 `http://gotify:80`）
@@ -92,7 +92,7 @@ Gotify 配置 = **first-set wins**（照 SSH 主机指纹 TOFU）：桥【未配
 
 | 位置 | 键 | 说明 |
 |---|---|---|
-| `bridge_config.yaml` | `gotify_url`、`gotify_token`（**首次 App 上报锁定** / 或 yaml 预填）**+** `gotify_url_local`、`register_port`、`tls_*`（静态）**+** `cloud_function_urls`、`cloud_function_token`（推送服务入口） | 首启自动生成（无 example 模板）。**gitignore——别提交真 token。** `register_port` 空 → 默认 8080；`tls_*` 空 → `/register` 走明文 http；`cloud_function_urls` 空 → 跳过推送（只订阅 Gotify）。 |
+| `bridge_config.yaml` | `gotify_url`、`gotify_token`（**首次 App 上报锁定** / 或 yaml 预填）**+** `gotify_url_local`、`register_port`、`tls_*`（静态）**+** `cloud_function_urls`、`cloud_function_token`（推送服务入口） | 首启自动生成（无 example 模板）。**gitignore——别提交真 token。** `register_port` 空 → 默认 8080；`tls_*` 空 → `/register` 走明文 http；`cloud_function_urls` 空 → **自动 fetch**（v1.1.2+ 走 Gitee 首选→ghproxy→raw 兜底 + 重试，国内稳；全挂才跳过推送）。 |
 | 环境变量 | `GOTIFY_HTTP_URL`、`GOTIFY_CLIENT_TOKEN` | 仅动态 gotify 字段的 headless 兜底 |
 | （private 已移出桥） | — | private 锁在**云函数**（Netlify），桥不含 → 桥可开源。见 `repourl.md` / `CloudFuction/PushKit.md`。 |
 | `push_tokens.json` | 设备 push token | App 上报自动管理。gitignore。 |
