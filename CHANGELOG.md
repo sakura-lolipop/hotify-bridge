@@ -2,6 +2,13 @@
 
 桥（hotify-bridge）的 notable 变化。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/)。
 
+## [v1.1.1] — 待发
+
+### Fixed
+- **重启后回补全量重放 bug**（用户反馈"有时候把全部消息再推一遍"）：高水位 `lastMsgID` 改持久化（`last_msg_id` 文件），`initLastID` 启动优先读落盘值续传（重启只补真漏的，不回放）；`backfill` 兜底——水位=0（启动撞 Gotify 不可达、`initLastID` 失败）时设到本批最大 id、一条不推（宁可漏断档绝不重放刷屏）。加 2 测试（落盘续传 + 水位=0 零重放，注册假设备+计数云函数验）。
+
+---
+
 ## [v1.1.0] — 2026-07-26
 
 ### Added

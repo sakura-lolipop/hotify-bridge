@@ -2,6 +2,24 @@
 
 > 完成的里程碑存档。进行中的看 [task.md](./task.md)。
 
+## v1.1.1（待发，已提交 main）— 修重启后回补全量重放 bug
+
+### 背景
+用户反馈：桥"有时候（重启/重连）会把全部消息再推送一遍"。
+
+### 根因
+`lastMsgID`（高水位）只在内存、不落盘。桥**启动撞 Gotify 不可达**时 `initLastID()` 失败（取不到最新消息）→ 水位留 0 → 首次 `backfill()` 取最近 100 条、`id>0` 全中 → **全量重放**。（纯运行中重连不受影响——内存水位还在，只补真漏的。）
+
+### 修
+- **水位落盘**：`forward` 每推一条写 `last_msg_id`；`initLastID` 启动优先读落盘值续传 → 重启只补真漏的，不回放。
+- **`backfill` 兜底**：水位=0（无落盘值 且 `initLastID` 没成）→ 设到本批最大 id、一条不推（宁可漏断档，绝不重放刷屏）。
+- 测试：`TestInitLastIDRestoresPersisted` + `TestBackfillGuardZeroWatermark`（注册假设备+计数云函数，验 0 重放）。`go test` 全过。
+
+### 待办
+打 `v1.1.1` tag 发版（触发 go-release/docker-release）+ 本地 `scripts/gitee-upload.sh v1.1.1` 传 Gitee。
+
+---
+
 ## v1.1.0（2026-07-26）— Docker 化 + 国内分发 + 小白文档
 
 ### Done

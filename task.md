@@ -6,8 +6,9 @@
 **v1.1.0 已发版**（GitHub + Gitee + GHCR + ACR 全通）。Docker 一键（install.sh + ACR）+ 各平台 Go 二进制 + 小白 README 都就位。
 
 ## 下一步 / 待办
+- [ ] **发 v1.1.1（patch）**：含"重启后回补全量重放"修复（见 [task-archive.md](./task-archive.md)）。`git tag v1.1.1 && git push origin v1.1.1` → 触发 go-release/docker-release → 本地 `GITEE_TOKEN=新令牌 bash scripts/gitee-upload.sh v1.1.1` 传 Gitee。
 - [ ] **App「部署指引」外链改指 Gitee**：HotifyNEXT App 仓里那条链接，从 GitHub README 改成 `gitee.com/sakura-lolipop/hotify-bridge/blob/main/docker.md`（国内可达）。不在本仓改。
-- [ ] **GHCR 镜像翻 Public**（首推默认 private）：`github.com/sakura-lolipop` → Packages → `hotify-bridge` → Package settings → Change visibility → Public。海外用户才拉得动。
+- [ ] **GHCR 翻 Public（可选/低优先）**：仅海外用户需要；Hotify 国内为主、ACR 已覆盖，可跳过，或干脆删 `docker-release.yml` 的 ghcr job 只留 ACR。
 - [ ] **Gitee 令牌轮换**：之前在对话里露过的旧令牌作废，去 gitee→私人令牌重建；GitHub 的 `GITEE_TOKEN` secret 也换成新的。
 - [ ] **下次发版流程**（备忘）：改代码 → `git push origin`（dual-push 自动 GitHub+Gitee）→ 打 `v*` tag（触发 go-release/release/docker-release）→ 本地 `GITEE_TOKEN=新令牌 bash scripts/gitee-upload.sh vX.Y.Z` 传 Gitee 二进制。
 
