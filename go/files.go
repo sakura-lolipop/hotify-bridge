@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 )
 
 // ──────────────────────────── 设备 token 注册表 + 订阅状态（镜像 Python load/save_tokens / load/save_subscribe_status）────────────────────────────
@@ -79,5 +81,29 @@ func saveSubscribeStatus(m map[string]bool) {
 	}
 	if err := os.WriteFile(subscribeStatusFile, data, 0644); err != nil {
 		fmt.Printf("[subscribe] 写入失败：%v\n", err)
+	}
+}
+
+// loadLastMsgID — 读 last_msg_id（高水位持久化，重启续传）。无文件/解析错 → 0。
+func loadLastMsgID() int64 {
+	fileMu.Lock()
+	defer fileMu.Unlock()
+	data, err := os.ReadFile(lastMsgIDFile)
+	if err != nil {
+		return 0
+	}
+	id, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return id
+}
+
+// saveLastMsgID — 写 last_msg_id（forward 每推一条更新；重启不丢水位）。fileMu 守卫。
+func saveLastMsgID(id int64) {
+	fileMu.Lock()
+	defer fileMu.Unlock()
+	if err := os.WriteFile(lastMsgIDFile, []byte(strconv.FormatInt(id, 10)), 0644); err != nil {
+		fmt.Printf("[Gotify] last_msg_id 写入失败：%v\n", err)
 	}
 }

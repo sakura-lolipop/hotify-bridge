@@ -128,8 +128,14 @@ func recentMessages(limit int) []GotifyMessage {
 
 // ──────────────────────────── 高水位 + 转发 + 回补（镜像 Python init_last_id / _forward / backfill）────────────────────────────
 
-// initLastID — 把高水位设到当前最新 id（不回放历史，只推此后新消息）。
+// initLastID — 设高水位（不回放历史）：优先落盘值（重启续传），没有再取最新 id。
+// 落盘值优先 = 重启后从上次水位续传，只补真漏的；首次启动没落盘值才取最新。
 func initLastID() {
+	if persisted := loadLastMsgID(); persisted > 0 {
+		lastMsgID.Store(persisted)
+		log.Printf("[Gotify] 从落盘水位 id=%d 续传（重启不回放历史）", persisted)
+		return
+	}
 	msgs := recentMessages(1)
 	if len(msgs) > 0 {
 		lastMsgID.Store(int64(msgs[0].ID))
@@ -146,6 +152,7 @@ func forward(msg GotifyMessage, tag string) {
 			return // 去重
 		}
 		if lastMsgID.CompareAndSwap(cur, mid) {
+			saveLastMsgID(mid) // 落盘水位（重启续传，防 lastMsgID 重置后回补全量重放）
 			break // 抢到更新
 		}
 	}
@@ -154,9 +161,24 @@ func forward(msg GotifyMessage, tag string) {
 }
 
 // backfill — 重连后回补断开期间漏的消息：取最近 100 条，筛 id>高水位，升序补推（去重）。
+// ★ 兜底：水位=0（没落盘值 且 initLastID 没拿到，如启动时 Gotify 抽风连不上）→ 别重放！
+//   把水位设成本批最大 id、一条不推（宁可漏断档，绝不重放刷屏——重放比漏推烦得多）。
+//   防"桥重启撞 Gotify 不可达 → initLastID 失败 → 水位留 0 → 首次回补把最近 100 条全推一遍"bug。
 func backfill() {
 	msgs := recentMessages(100)
 	cur := lastMsgID.Load()
+	if cur == 0 && len(msgs) > 0 {
+		maxID := int64(0)
+		for _, m := range msgs {
+			if int64(m.ID) > maxID {
+				maxID = int64(m.ID)
+			}
+		}
+		lastMsgID.Store(maxID)
+		saveLastMsgID(maxID)
+		log.Printf("[Gotify] ⚠️ 水位未知（无落盘值 且 initLastID 没成功），从本批最新 id=%d 开始，%d 条不回放（防重放刷屏；断档可在 App GET /message 看）", maxID, len(msgs))
+		return
+	}
 	var missed []GotifyMessage
 	for _, m := range msgs {
 		if int64(m.ID) > cur {

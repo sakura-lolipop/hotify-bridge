@@ -14,6 +14,7 @@ const (
 	bridgeConfigFile     = "bridge_config.yaml"
 	pushTokensFile       = "push_tokens.json"
 	subscribeStatusFile  = "subscribe_status.json"
+	lastMsgIDFile        = "last_msg_id" // 已转发最高 id 持久化（重启续传，防回补全量重放）
 	registerPortDefault  = 8080 // register_port 留空 → 此值（公开发布默认 8080，避开 Gotify 常占的 80/443；自用/测试在 yaml 显式设 register_port 覆盖）
 )
 

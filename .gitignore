@@ -39,3 +39,4 @@ go/hotify-bridge.exe
 go/*.test
 go/*.out
 go/dist/
+go/last_msg_id
