@@ -47,18 +47,25 @@ jobs:
           [ -n "$TAG" ] || { echo "❌ 没拿到 tag"; exit 1; }
           API="https://gitee.com/api/v5/repos/$GITEE_USER/$REPO"
 
-          # 1) 建 release（POST /releases，端点已核实）；create 没返 id（已存在）则 GET 列表找
+          # 1) 建 release —— 打印原始响应排错（响应体不含 token，安全）。create 没返 id 则 GET 列表找。
           #    ⚠️ Gitee 没有 GitHub 的 /releases/tags/{tag} 路由（实测 405），别用。
-          RID=$(curl -sSL -X POST "$API/releases" \
+          echo "::group::POST $API/releases（原始响应）"
+          RESP=$(curl -sSL -w '\n__HTTP__%{http_code}\n' -X POST "$API/releases" \
             -H "Content-Type: application/json" \
-            -d "{\"access_token\":\"$GITEE_TOKEN\",\"tag_name\":\"$TAG\",\"name\":\"$TAG\",\"body\":\"hotify-bridge $TAG Go 二进制（GitHub Releases 国内拉不动，此处镜像）\",\"target_commitish\":\"main\"}" \
-            | jq -r '.id // empty')
+            -d "{\"access_token\":\"$GITEE_TOKEN\",\"tag_name\":\"$TAG\",\"name\":\"$TAG\",\"body\":\"hotify-bridge $TAG\",\"target_commitish\":\"main\"}")
+          printf '%s\n' "$RESP"
+          RID=$(printf '%s' "$RESP" | jq -r '.id // empty' 2>/dev/null || true)
+          echo "rid from create = ${RID:-<空>}"
+          echo "::endgroup::"
           if [ -z "$RID" ]; then
-            echo "create 没返 id（可能 $TAG release 已存在），拉列表找..."
-            RID=$(curl -sSL "$API/releases?access_token=$GITEE_TOKEN" | jq -r ".[] | select(.tag_name==\"$TAG\") | .id" | head -1)
+            echo "::group::GET $API/releases（找已存在的 $TAG，原始响应）"
+            LRESP=$(curl -sSL -w '\n__HTTP__%{http_code}\n' "$API/releases?access_token=$GITEE_TOKEN")
+            printf '%s\n' "$LRESP"
+            RID=$(printf '%s' "$LRESP" | jq -r ".[] | select(.tag_name==\"$TAG\") | .id" 2>/dev/null | head -1 || true)
+            echo "rid from list = ${RID:-<空>}"
+            echo "::endgroup::"
           fi
-          echo "release_id=$RID (tag=$TAG)"
-          [ -n "$RID" ] || { echo "❌ 拿不到 release_id（token 权限？）"; exit 1; }
+          [ -n "$RID" ] || { echo "❌ 拿不到 release_id——看上面 ::group:: 原始响应定位（token scope / 端点 / 返回格式）"; exit 1; }
 
           # 2) 逐个传二进制（attach_files，multipart file= 字段）
           for f in go/dist/*; do
