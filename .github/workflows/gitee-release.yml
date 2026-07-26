@@ -50,7 +50,7 @@ jobs:
           # 1) 建 release —— 打印原始响应排错（响应体不含 token，安全）。create 没返 id 则 GET 列表找。
           #    ⚠️ Gitee 没有 GitHub 的 /releases/tags/{tag} 路由（实测 405），别用。
           echo "::group::POST $API/releases（原始响应）"
-          RESP=$(curl -sSL -w '\n__HTTP__%{http_code}\n' -X POST "$API/releases" \
+          RESP=$(curl -sSL --connect-timeout 15 --max-time 60 -w '\n__HTTP__%{http_code}\n' -X POST "$API/releases" \
             -H "Content-Type: application/json" \
             -d "{\"access_token\":\"$GITEE_TOKEN\",\"tag_name\":\"$TAG\",\"name\":\"$TAG\",\"body\":\"hotify-bridge $TAG\",\"target_commitish\":\"main\"}")
           printf '%s\n' "$RESP"
@@ -59,7 +59,7 @@ jobs:
           echo "::endgroup::"
           if [ -z "$RID" ]; then
             echo "::group::GET $API/releases（找已存在的 $TAG，原始响应）"
-            LRESP=$(curl -sSL -w '\n__HTTP__%{http_code}\n' "$API/releases?access_token=$GITEE_TOKEN")
+            LRESP=$(curl -sSL --connect-timeout 15 --max-time 60 -w '\n__HTTP__%{http_code}\n' "$API/releases?access_token=$GITEE_TOKEN")
             printf '%s\n' "$LRESP"
             RID=$(printf '%s' "$LRESP" | jq -r ".[] | select(.tag_name==\"$TAG\") | .id" 2>/dev/null | head -1 || true)
             echo "rid from list = ${RID:-<空>}"
@@ -71,7 +71,7 @@ jobs:
           for f in go/dist/*; do
             bn=$(basename "$f")
             echo "→ 上传 $bn"
-            curl -fsSL -X POST "$API/releases/$RID/attach_files" \
+            curl -fsSL --connect-timeout 15 --max-time 180 -X POST "$API/releases/$RID/attach_files" \
               -F "access_token=$GITEE_TOKEN" \
               -F "file=@$f" \
               | jq -r '.browser_download_url // "（无 url 返回）"'
