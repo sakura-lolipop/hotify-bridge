@@ -47,16 +47,21 @@ python -u gotify_pushkit_bridge.py   # first run auto-generates bridge_config.ya
 For NAS (Synology Container Manager / QNAP Container Station / Unraid) or any server with Docker — no Go toolchain, no binary download, just `docker pull`. The image ships for **amd64 + arm64** (auto-matched: x86 servers / ARM NAS / Raspberry Pi).
 
 ```bash
-docker pull ghcr.io/sakura-lolipop/hotify-bridge:latest
+# China (recommended, Aliyun ACR — ghcr.io is blocked in China):
+docker pull crpi-gi2hyqoir87c0lus.cn-hangzhou.personal.cr.aliyuncs.com/sakura-lolipop/hotify-bridge:latest
+# Overseas / if you can reach ghcr.io:
+# docker pull ghcr.io/sakura-lolipop/hotify-bridge:latest
 
 # Run it: map port 8080 + mount ./data to persist config/state
 docker run -d --name hotify-bridge --restart unless-stopped \
   -p 8080:8080 -v "$PWD/data:/data" \
-  ghcr.io/sakura-lolipop/hotify-bridge:latest
+  crpi-gi2hyqoir87c0lus.cn-hangzhou.personal.cr.aliyuncs.com/sakura-lolipop/hotify-bridge:latest
 
 # First run generates ./data/bridge_config.yaml → edit (gotify_token + cloud_function_urls) → restart
 docker restart hotify-bridge
 ```
+
+📖 Full deploy guide (NAS GUI, Gotify networking, public HTTPS, troubleshooting): see [`docker.md`](./docker.md).
 
 Or use the repo's [`docker-compose.yml`](./docker-compose.yml): `docker compose up -d`.
 

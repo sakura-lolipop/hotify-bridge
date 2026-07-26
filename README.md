@@ -56,16 +56,21 @@ go build -o gotify-bridge .          # 单平台；或 bash build-all.sh 出全�
 NAS（Synology Container Manager / QNAP Container Station / Unraid）或任何装了 Docker 的服务器，最省事——不用装 Go、不用下二进制，`docker pull` 即用。镜像随发版更新，**amd64 + arm64 多架构**自动匹配你的设备（x86 服务器 / ARM NAS / 树莓派）。
 
 ```bash
-docker pull ghcr.io/sakura-lolipop/hotify-bridge:latest
+# 国内（推荐，阿里云 ACR）：
+docker pull crpi-gi2hyqoir87c0lus.cn-hangzhou.personal.cr.aliyuncs.com/sakura-lolipop/hotify-bridge:latest
+# 海外 / 能连 ghcr.io：
+# docker pull ghcr.io/sakura-lolipop/hotify-bridge:latest
 
-# 跑起来：映射 8080 端口 + 挂 ./data 卷持久化配置/状态
+# 跑起来：映射 8080 + 挂 ./data 卷持久化配置/状态
 docker run -d --name hotify-bridge --restart unless-stopped \
   -p 8080:8080 -v "$PWD/data:/data" \
-  ghcr.io/sakura-lolipop/hotify-bridge:latest
+  crpi-gi2hyqoir87c0lus.cn-hangzhou.personal.cr.aliyuncs.com/sakura-lolipop/hotify-bridge:latest
 
 # 首启在 ./data/ 生成 bridge_config.yaml → 编辑填 gotify_token + cloud_function_urls → 重启
 docker restart hotify-bridge
 ```
+
+📖 完整部署指南（NAS GUI、Gotify 容器寻址、公网 HTTPS、排错）见 [`docker.md`](./docker.md)。
 
 或用仓库自带的 [`docker-compose.yml`](./docker-compose.yml)：`docker compose up -d`。
 

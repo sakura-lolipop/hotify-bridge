@@ -4,8 +4,9 @@
 
 services:
   hotify-bridge:
-    # 公开镜像（GHCR，发版即更新）。要本地源码构建，注释掉 image:、放开下面 build:。
-    image: ghcr.io/sakura-lolipop/hotify-bridge:latest
+    # 公开镜像。国内默认走阿里云 ACR（ghcr.io 被墙拉不动）；海外或能连 ghcr 换 GHCR 那行。
+    image: crpi-gi2hyqoir87c0lus.cn-hangzhou.personal.cr.aliyuncs.com/sakura-lolipop/hotify-bridge:latest
+    # image: ghcr.io/sakura-lolipop/hotify-bridge:latest   # 海外用这个
     # build: .           # 本地 docker build（用仓根 Dockerfile）
 
     container_name: hotify-bridge
