@@ -35,8 +35,9 @@ jobs:
         working-directory: go
         run: bash build-all.sh
 
-      - name: 建 Gitee Release 并上传二进制
+      - name: 建 Release（已存在则跳过，下一步上传）
         uses: nicennnnnnnlee/action-gitee-release@v2.0.0
+        continue-on-error: true   # tag 已有 release → Gitee 报"该标签已存在发行版"，正常；upload_asset 接着传
         with:
           gitee_action: create_release
           gitee_owner: sakura-lolipop
@@ -48,6 +49,15 @@ jobs:
             Go 二进制（GitHub Releases 国内拉不动，此处镜像）。
             免 Docker 用户：下对应平台的包直接跑。Docker 部署看 docker.md / README。
           gitee_target_commitish: main
+
+      - name: 上传二进制到 Release（按 tag 定位，新建/已有都吃）
+        uses: nicennnnnnnlee/action-gitee-release@v2.0.0
+        with:
+          gitee_action: upload_asset
+          gitee_owner: sakura-lolipop
+          gitee_repo: hotify-bridge
+          gitee_token: ${{ secrets.GITEE_TOKEN }}
+          gitee_tag_name: ${{ env.TAG }}
           gitee_upload_retry_times: 3
           gitee_files: |
             go/dist/gotify-bridge-linux-amd64
