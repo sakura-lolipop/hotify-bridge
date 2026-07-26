@@ -45,7 +45,21 @@ docker run -d --name gotify --restart unless-stopped -p 8081:80 -v "$PWD/gotify-
 
 ---
 
-## 🚀 部署桥（跟着做，3 步）
+## 🐳 docker compose（推荐 · SSH-light）
+
+SSH 谨慎、不想 `curl|bash` 跑远程脚本的，走 compose——配置走环境变量（`.env` 文件），**不用 SSH 编辑任何配置**；NAS 上还能在 Container Manager 图形界面粘 compose + 填 env，全程不开 SSH：
+
+1. 拿 `docker-compose.yml` + `.env.example`（[Gitee 仓](https://gitee.com/sakura-lolipop/hotify-bridge)）。
+2. 复制 `.env.example` 成 `.env`，填 `GOTIFY_CLIENT_TOKEN` + `GOTIFY_HTTP_URL`（地址怎么填见 `.env.example` 注释）。
+3. `docker compose up -d`。
+
+完事——桥读 env 自动配好，`cloud_function_urls` 不用填（v1.1.2+ 自动从 Gitee fetch）。完整步骤见 [`docker.md`「docker compose」节](./docker.md)。
+
+---
+
+## 🚀 或：install.sh 一键脚本（SSH 一条命令，3 步）
+
+SSH 用熟、想一条命令搞定的走这条。**要 SSH 跑远程脚本**——谨慎的用上面的 compose。
 
 ### 第 1 步：登录你的服务器 / NAS
 

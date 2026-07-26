@@ -4,23 +4,31 @@
 >
 > App「设置」里的"部署指引"链的就是这篇。打不开是 GitHub 被墙——用 Gitee 镜像：`gitee.com/sakura-lolipop/hotify-bridge/blob/main/docker.md`。
 
-## 🚀 一键安装（推荐，最省事）
+## 🐳 docker compose（推荐 · SSH-light）
 
-有 Docker 的 Linux 服务器 / NAS（SSH 进去），一条命令搞定——问俩问题（Gotify token + 地址），剩下全自动（拉 ACR 镜像、写配置、起容器）：
+最省心、最不碰 SSH。配置走**环境变量**（不编辑服务器上的文件）；NAS 上还能在 Container Manager 图形界面粘 compose + 填 env，**全程不开 SSH**。
+
+1. 拿 `docker-compose.yml` + `.env.example`（仓里：[Gitee](https://gitee.com/sakura-lolipop/hotify-bridge)）。
+2. 复制 `.env.example` 成 `.env`，填俩值（注释里有 Gotify 地址怎么填）：
+   ```
+   GOTIFY_CLIENT_TOKEN=你的gotify_client_token
+   GOTIFY_HTTP_URL=https://gotify.你域名.com   # 或 http://gotify容器名:端口 / http://host.docker.internal:端口
+   ```
+3. `docker compose up -d`。
+
+完事——桥读 env 自动配好 gotify；`cloud_function_urls` 不用填（v1.1.2+ 自动从 Gitee fetch）。改配置改 `.env` 再 `up -d`。**全程不 SSH 编辑任何配置文件。**
+
+> NAS GUI：Container Manager「项目」粘 `docker-compose.yml` 内容，环境变量栏填 `GOTIFY_HTTP_URL` / `GOTIFY_CLIENT_TOKEN`，不开 SSH。
+
+## ⚡ 一键脚本 install.sh（可选，SSH 一条命令）
+
+SSH 用熟、想一条命令搞定的：拉 `install.sh` + bash 跑，问俩问题自动起。**会 SSH 跑远程脚本才用这个**——谨慎的（不想 SSH 跑脚本）走上面的 compose。
 
 ```bash
 curl -fsSL https://gitee.com/sakura-lolipop/hotify-bridge/raw/main/install.sh -o install.sh && bash install.sh
 ```
 
-不想交互（CI / 脚本）？环境变量传配置：
-
-```bash
-HOTIFY_TOKEN=你的gotify_client_token HOTIFY_GOTIFY_URL=https://your.gotify:port bash install.sh
-```
-
-跑完容器就起来了、配置已预填，**不用再手动编辑 + 重启**。之后改 `./hotify-bridge-data/bridge_config.yaml` 再 `docker restart hotify-bridge`。
-
-> 下面是手动步骤 / 细节，一键跑通的可跳过。
+> 下面是手动 / 细节，compose 或脚本跑通的可跳过。
 
 ## 镜像（多架构 amd64+arm64，已实测）
 
@@ -46,15 +54,9 @@ docker run -d --name hotify-bridge --restart unless-stopped \
 
 首启会在 `./data/bridge_config.yaml` 自动生成带注释的配置 → 编辑填 `gotify_token` + `cloud_function_urls` → `docker restart hotify-bridge`。
 
-## docker-compose
+## docker-compose 补充
 
-仓库自带 [`docker-compose.yml`](./docker-compose.yml)，默认拉国内 ACR：
-
-```bash
-docker compose up -d
-# 编辑 ./data/bridge_config.yaml 后
-docker compose restart
-```
+走 compose 看本文顶部「docker compose」节（`.env` 流程，免 SSH 编辑）。仓库自带的 [`docker-compose.yml`](./docker-compose.yml) 默认拉国内 ACR + 带 `environment:` 段（从 `.env` 读 gotify 配置）。
 
 ## 配置（编辑挂载目录里的 `bridge_config.yaml`）
 
@@ -93,6 +95,6 @@ OCI image index（多架构清单），amd64 + arm64 两个条目都实测存在
 ## 排错
 
 - **拉不动 GHCR**：国内换 ACR 地址（上表）。
-- **首启后 `/register` 要等 ~6s**：冷启动要 fetch 一次 cloud_function_urls（走 ghproxy 兜底），稍等即监听 8080。
+- **首启后 `/register` 要等 ~6s**：冷启动 fetch 一次 cloud_function_urls.txt（v1.1.2+ 走 **Gitee 首选 → ghproxy → raw 兜底**），稍等即监听 8080。
 - **Gotify 连不上**：99% 是上面那个"容器 127.0.0.1"坑——按拓扑表填 `gotify_url`。
 - 更多见 [BRIDGE.md](./BRIDGE.md)。
