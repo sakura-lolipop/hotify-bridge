@@ -45,7 +45,7 @@ jobs:
           : "${GITEE_USER:?GITEE_USER secret 没配}"
           : "${GITEE_TOKEN:?GITEE_TOKEN secret 没配}"
           [ -n "$TAG" ] || { echo "❌ 没拿到 tag"; exit 1; }
-          API="https://gitee.com/api/v5/repos/$GITEE_USER/$REPO"
+          API="https://gitee.com/api/v5/repos/sakura-lolipop/$REPO"
 
           # 1) 建 release —— 打印原始响应排错（响应体不含 token，安全）。create 没返 id 则 GET 列表找。
           #    ⚠️ Gitee 没有 GitHub 的 /releases/tags/{tag} 路由（实测 405），别用。
