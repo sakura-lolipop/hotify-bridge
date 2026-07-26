@@ -1,0 +1,34 @@
+name: Mirror to Gitee
+
+# GitHub → Gitee 自动镜像：GitHub 一 push（main / tag）→ 同步到 gitee.com/sakura-lolipop/hotify-bridge。
+# 给"非本机 push"兜底（别的机器 / GitHub 网页改 / PR 合并）；本机 push 已走 origin dual-push 直推 gitee，
+#   对本机 push 是幂等重确认（gitee 结果不变，仅多一次 run）。
+# 需仓库 secret：GITEE_USER（gitee 用户名，对 sakura-lolipop 有推送权）+ GITEE_TOKEN（gitee 私人令牌，projects 权限）。
+# 没配 secret 时此 job 会失败——不影响 go-release / release / docker-release 三个发版 workflow。
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 全历史，tag 才推得全
+      - name: Push to Gitee
+        env:
+          GITEE_USER: ${{ secrets.GITEE_USER }}
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          set -e
+          REMOTE="https://${GITEE_USER}:${GITEE_TOKEN}@gitee.com/sakura-lolipop/hotify-bridge.git"
+          # main 同步（force：以 GitHub 为准，覆盖 gitee 任何分叉）
+          git push --force "$REMOTE" HEAD:main
+          # 全部 tag 同步
+          git push --force "$REMOTE" --tags
