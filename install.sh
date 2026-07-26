@@ -61,6 +61,7 @@ gotify_config_path:
 tls_cert_file:
 tls_key_file:
 subscribe_label: true
+# 留空 = 自动从云端拉取托管推送服务（启动 cache-first fetch + 后台每 h 刷新）；自托管推送服务才手填
 cloud_function_urls:
 cloud_function_token: hotifypushkit
 EOF
@@ -72,7 +73,9 @@ docker pull "$IMAGE"
 
 # ── 起容器（旧的同名容器先删）──
 docker rm -f "$NAME" >/dev/null 2>&1 || true
+# --add-host：让容器里 host.docker.internal 能寻址宿主机（Gotify 跑宿主机时填 http://host.docker.internal:端口）
 docker run -d --name "$NAME" --restart unless-stopped \
+  --add-host=host.docker.internal:host-gateway \
   -p "$PORT:8080" -v "$DATA_DIR:/data" "$IMAGE" >/dev/null
 
 echo ""

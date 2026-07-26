@@ -16,11 +16,32 @@
 
 ---
 
-## 你需要先准备 3 样
+## 🧰 第 0 步：先把这几样备齐（小白重点看，缺一不可）
 
-1. **一台能联网、能跑 Docker 的机器**：NAS（群晖/威联通）、小主机、VPS 都行。
-2. **一个跑起来的 [Gotify](https://gotify.net/)**：免费开源的消息中转。没装？去 [gotify.net](https://gotify.net/) 装一个（有 Docker 一行起）。
-3. **鸿蒙手机装 Hotify App**（App 上架后这里放链接）。
+### ① 会进你的 NAS / 服务器敲命令（SSH）
+SSH 就是"远程登录到 NAS 的命令行"。没听过没关系，跟着做：
+- **群晖**：控制面板 → 终端机和 SNMP → 勾选「**启用 SSH 功能**」→ 保存。
+- **你电脑（Windows）**：开始菜单搜「**终端**」（或 PowerShell）打开，敲：
+  ```
+  ssh 你的用户名@NAS的IP
+  ```
+  第一次问 `yes/no` 输 `yes`，再输 NAS 密码——**打字时屏幕没反应是正常的**，盲打完回车。
+- NAS 的 IP 在哪看：群晖控制面板 → 网络 → 网络界面（一般是 `192.168.x.x`）。
+- ⚠️ 这个地址**只有和 NAS 在同一 WiFi / 局域网才能用**；人在外面用 4G 连不上，得另外搞内网穿透（frp / 群晖自带）。
+
+### ② 机器上要有 Docker
+- **群晖**：出厂**没有** Docker！它叫 **Container Manager**：打开「**套件中心**」→ 搜 `Container Manager` → 安装。
+- **VPS / Linux 小主机**：多半已装；没有就 `curl -fsSL https://get.docker.com | sh`。
+- 验证：敲 `docker -v`，能出版本号就行。（群晖若提示找不到 `docker` 命令：`sudo ln -s /var/packages/ContainerManager/target/usr/bin/docker /usr/local/bin/docker`）
+
+### ③ 一个跑起来的 Gotify（消息中转，桥从它读消息）
+桥**不替代** Gotify，得先有它。在**和桥同一台机器**上用 Docker 起一个：
+```bash
+docker run -d --name gotify --restart unless-stopped -p 8081:80 -v "$PWD/gotify-data:/app/data" gotify/server
+```
+浏览器开 `http://NAS的IP:8081` → 第一次让你**建管理员账号** → 建好登进去。（`8081` 是例子端口，别和桥的 `8080` 冲突就行。）
+
+### ④ 鸿蒙手机装 Hotify App（App 上架后这里放链接）
 
 ---
 
@@ -42,10 +63,18 @@ curl -fsSL https://gitee.com/sakura-lolipop/hotify-bridge/raw/main/install.sh -o
 
 ### 第 3 步：脚本问你两个问题，照填
 
-1. **Gotify token**：打开你的 Gotify 网页 → 左边 `CLIENTS` → `+ Create Client` → 复制那串 Token，粘进来。
-2. **Gotify 地址**：你的 Gotify 网址，如 `https://gotify.你域名.com`。
-   - 桥和 Gotify 在同一台机？填 `http://gotify容器名:端口` 或先留空（App 会自动上报）。
-   - 不确定？先留空，不影响起容器。
+**问题 1：Gotify token**
+- 打开 Gotify 网页（`http://NAS的IP:8081`，你第 0 步装的）。
+- 左边栏点 **CLIENTS** → `+ Create Client` → 复制那串 Token，粘进来。
+- ⚠️ 是 **CLIENTS**，**不是 APPLICATIONS**（APPLICATIONS 的 token 只能"发"消息；桥要的是能"读"消息的 CLIENT token）。
+- token 就是让桥读你 Gotify 消息的"密码"。
+
+**问题 2：Gotify 地址**
+- ⚠️ **千万别填 `127.0.0.1` 或 `localhost`**——容器里它指的是容器自己，连不到 Gotify。这是 No.1 踩坑。
+- Gotify 和桥在**同一台 NAS**：填 `http://host.docker.internal:8081`（脚本已自动开 host-gateway，能寻址宿主机）。
+- Gotify 在**另一台机器**：填那台的局域网 IP，如 `http://192.168.1.50:8081`。
+- 有**域名**：填 `https://gotify.你域名.com`。
+- 完全不确定：先留空（App 上报时也会带过来），不影响先把容器起起来。
 
 回车后，脚本**自己**拉镜像、写好配置、起容器。看到这行就成了：
 
