@@ -58,6 +58,19 @@ docker run -d --name hotify-bridge --restart unless-stopped \
 
 走 compose 看本文顶部「docker compose」节（`.env` 流程，免 SSH 编辑）。仓库自带的 [`docker-compose.yml`](./docker-compose.yml) 默认拉国内 ACR + 带 `environment:` 段（从 `.env` 读 gotify 配置）。
 
+## 🔄 更新到新版（compose）
+
+新版发布后，compose 用户更新就两条命令——数据卷 `./data` 保留，配置/token/水位都不丢，**不用重配**：
+
+```bash
+docker compose pull      # 拉最新 :latest 镜像
+docker compose up -d     # 用新镜像重建容器（停旧换新）
+```
+
+- `./data` 卷（`bridge_config.yaml` / `push_tokens.json` / `last_msg_id`）跨重建保留 → 配置不动、设备 token 不掉、**高水位不丢（更新不会触发"全量重放"）**。
+- 想固定某版本：把 `docker-compose.yml` 里镜像 tag 从 `:latest` 改成 `:1.1.2`（具体版本），再 `pull` + `up -d`。
+- 清旧镜像（可选）：`docker image prune -f`。
+
 ## 配置（编辑挂载目录里的 `bridge_config.yaml`）
 
 - **必填**：`gotify_token`（Gotify **CLIENT** token，WebUI→CLIENTS 建，不是 app token）+ `cloud_function_urls`（用 Hotify 托管默认即可，留空也行）。
