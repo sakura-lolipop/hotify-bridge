@@ -1,6 +1,8 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -84,4 +86,65 @@ func TestIsPrivateIP(t *testing.T) {
 		}
 	}
 	t.Logf("✓ hazard 8：私网判定（127/10/172.16-31/192.168/localhost/::1=true；172.32/公网/域名=false）")
+}
+
+// TestFetchCfURLsFromTxt — fetch 源（Gitee 首选）拉到 txt → 填 cfg + 写 cache。
+// 用 mock 服务替代真实 Gitee/ghproxy/raw（cfTxtSources 是 var，测试临时指向 mock）。
+func TestFetchCfURLsFromTxt(t *testing.T) {
+	body := "https://hotifypushkit.netlify.app/api/push\n# 注释行跳过\n"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+
+	orig := cfTxtSources
+	cfTxtSources = []string{srv.URL + "/cloud_function_urls.txt"}
+	defer func() { cfTxtSources = orig }()
+	_ = os.Remove(cfTxtCache)
+	cfgMu.Lock()
+	cfg = Config{}
+	cfgMu.Unlock()
+
+	fetchCfURLsFromTxt()
+
+	cfgMu.RLock()
+	got := cfg.CloudFunctionURLs
+	cfgMu.RUnlock()
+	if len(got) != 1 || got[0] != "https://hotifypushkit.netlify.app/api/push" {
+		t.Fatalf("fetchCfURLsFromTxt 后 cfg.CloudFunctionURLs=%v（期望 1 个托管 URL）", got)
+	}
+	if _, err := os.Stat(cfTxtCache); err != nil {
+		t.Errorf("fetch 成功应写 cache %s，stat 失败：%v", cfTxtCache, err)
+	}
+	_ = os.Remove(cfTxtCache)
+	t.Logf("✓ fetchCfURLsFromTxt：拉到 %v + 写 cache", got)
+}
+
+// TestFetchCfTxtOnceFallback — ★ 多源兜底（PandaSoos 修复核心）：首个源 500、次个源 200
+// → fetchCfTxtOnce 跳过失败的、用第二个（Gitee/ghproxy/raw 任一通就行，不全挂即返）。
+func TestFetchCfTxtOnceFallback(t *testing.T) {
+	failSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+	}))
+	okSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("https://fallback.example/api/push\n"))
+	}))
+	t.Cleanup(failSrv.Close)
+	t.Cleanup(okSrv.Close)
+
+	orig := cfTxtSources
+	cfTxtSources = []string{failSrv.URL + "/x", okSrv.URL + "/x"}
+	defer func() { cfTxtSources = orig }()
+
+	parsed, tag, ok := fetchCfTxtOnce()
+	if !ok {
+		t.Fatal("fetchCfTxtOnce 应兜底到第二个源，但返回 ok=false")
+	}
+	if len(parsed) != 1 || parsed[0] != "https://fallback.example/api/push" {
+		t.Fatalf("应取到 fallback 源的 URL，parsed=%v", parsed)
+	}
+	if tag != "直连" {
+		t.Errorf("tag=%q（mock URL 不含 gitee/ghproxy，应 '直连'）", tag)
+	}
+	t.Logf("✓ fetchCfTxtOnce 兜底：首源 500 → 用次源，parsed=%v tag=%s", parsed, tag)
 }

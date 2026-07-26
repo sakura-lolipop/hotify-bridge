@@ -19,12 +19,21 @@ import (
 
 // ──────────────────────────── 0-config 自动探测（镜像 Python _probe/_parse_gotify_config / _autodetect_local_gotify / _fetch_cf_urls_from_txt）────────────────────────────
 
-// cloud_function_urls.txt fetch 源（ghproxy.com 优先国内加速 → 直连 fallback）
+// cloud_function_urls.txt fetch 源（Gitee 国内首选 → ghproxy 加速 → raw 直连兜底）。
+// Gitee raw 国内直连最稳（GitHub raw 被墙、ghproxy 第三方免费代理不稳；PandaSoos 实测空配 fetch 全挂→收不到推送）。
 var cfTxtSources = []string{
+	"https://gitee.com/sakura-lolipop/hotify-bridge/raw/main/cloud_function_urls.txt",
 	"https://ghproxy.com/https://raw.githubusercontent.com/sakura-lolipop/hotify-bridge/main/cloud_function_urls.txt",
 	"https://raw.githubusercontent.com/sakura-lolipop/hotify-bridge/main/cloud_function_urls.txt",
 }
 const cfTxtCache = "cloud_function_urls.cache.txt"
+
+// fetch 韧性参数（Gitee 通则秒成；重试只在罕见"全源都挂"时触发，别设太大免拖慢冷启动）。
+const (
+	cfFetchTimeout    = 8 * time.Second // 单源超时（源挂/被墙时砍掉，别死等）
+	cfFetchRetries    = 2               // 冷启动全挂时的重试次数（含首次）
+	cfFetchRetryDelay = 3 * time.Second // 重试间隔
+)
 
 // cfYamlOverride — bridge_config.yaml 显式填了 cloud_function_urls（手动 override）。
 // true → 不走 txt/cache 自动管理（启动跳过 initCfURLs、后台不刷新），尊重部署者手填。
@@ -308,18 +317,10 @@ func initCfURLs() {
 	fetchCfURLsFromTxt()
 }
 
-// fetchCfURLsFromTxt — cloud_function_urls 空时 → fetch cloud_function_urls.txt（GitHub raw，ghproxy.com 优先国内加速）
-// → 按行解析 URL。拉到 → 缓存本地（全挂时用缓存）。已配（bridge_config override）→ 跳过。
-// 冷启动用（initCfURLs 无 cache 时调）；后台刷新用 refreshCfURLs（只更新有变化的）。
-func fetchCfURLsFromTxt() {
-	cfgMu.RLock()
-	urls := cfg.CloudFunctionURLs
-	cfgMu.RUnlock()
-	if len(urls) > 0 {
-		return
-	}
-
-	client := &http.Client{Timeout: 8 * time.Second}
+// fetchCfTxtOnce — 按 cfTxtSources 顺序试一遍，首个 200+有效内容 → 返回 (URLs, 来源tag, true)。全挂 → (nil,"",false)。
+// tag: gitee / ghproxy / 直连（日志区分走哪个源拿到）。
+func fetchCfTxtOnce() ([]string, string, bool) {
+	client := &http.Client{Timeout: cfFetchTimeout}
 	for _, src := range cfTxtSources {
 		resp, err := client.Get(src)
 		if err != nil {
@@ -331,32 +332,56 @@ func fetchCfURLsFromTxt() {
 		}
 		content, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		parsed := parseCfTxt(string(content))
-		if len(parsed) > 0 {
-			cfgMu.Lock()
-			cfg.CloudFunctionURLs = parsed
-			cfgMu.Unlock()
-			_ = os.WriteFile(cfTxtCache, content, 0644)
+		if parsed := parseCfTxt(string(content)); len(parsed) > 0 {
 			tag := "直连"
-			if strings.Contains(src, "ghproxy.com") {
+			switch {
+			case strings.Contains(src, "gitee.com"):
+				tag = "gitee"
+			case strings.Contains(src, "ghproxy.com"):
 				tag = "ghproxy"
 			}
-			log.Printf("[配置] ✓ fetch cloud_function_urls.txt（%s）→ %v", tag, parsed)
-			return
+			return parsed, tag, true
 		}
 	}
-	// 全挂 → 用缓存
-	if data, err := os.ReadFile(cfTxtCache); err == nil {
-		parsed := parseCfTxt(string(data))
-		if len(parsed) > 0 {
+	return nil, "", false
+}
+
+// fetchCfURLsFromTxt — cloud_function_urls 空时 → fetch cloud_function_urls.txt
+// （Gitee 首选 → ghproxy → raw，带重试 + cache 兜底）→ 按行解析 URL。拉到 → 缓存本地（全挂时用缓存）。
+// 已配（bridge_config override）→ 跳过。冷启动用（initCfURLs 无 cache 时调）；后台刷新用 refreshCfURLs。
+func fetchCfURLsFromTxt() {
+	cfgMu.RLock()
+	urls := cfg.CloudFunctionURLs
+	cfgMu.RUnlock()
+	if len(urls) > 0 {
+		return
+	}
+	for attempt := 1; attempt <= cfFetchRetries; attempt++ {
+		parsed, tag, ok := fetchCfTxtOnce()
+		if ok {
 			cfgMu.Lock()
 			cfg.CloudFunctionURLs = parsed
 			cfgMu.Unlock()
-			log.Printf("[配置] ⚠ fetch .txt 全挂,用缓存（%d 个 URL）", len(parsed))
+			_ = os.WriteFile(cfTxtCache, []byte(strings.Join(parsed, "\n")+"\n"), 0644)
+			log.Printf("[配置] ✓ fetch cloud_function_urls.txt（%s，第 %d 次）→ %v", tag, attempt, parsed)
+			return
+		}
+		if attempt < cfFetchRetries {
+			log.Printf("[配置] ⏳ fetch cloud_function_urls.txt 第 %d/%d 次全挂（gitee+ghproxy+raw 都没成），%v 后重试", attempt, cfFetchRetries, cfFetchRetryDelay)
+			time.Sleep(cfFetchRetryDelay)
+		}
+	}
+	// N 次全挂 → 用缓存
+	if data, err := os.ReadFile(cfTxtCache); err == nil {
+		if parsed := parseCfTxt(string(data)); len(parsed) > 0 {
+			cfgMu.Lock()
+			cfg.CloudFunctionURLs = parsed
+			cfgMu.Unlock()
+			log.Printf("[配置] ⚠ fetch .txt %d 次全挂，用缓存（%d 个 URL）", cfFetchRetries, len(parsed))
 			return
 		}
 	}
-	log.Print("[配置] ⚠ fetch cloud_function_urls.txt 失败（ghproxy + 直连都挂,无缓存）。请手填 cloud_function_urls")
+	log.Printf("[配置] ⚠ fetch cloud_function_urls.txt %d 次全挂且无缓存。请手填 cloud_function_urls（或等后台刷新）", cfFetchRetries)
 }
 
 // parseCfTxt — 一行一个 URL，跳过空行 + # 注释。
@@ -372,43 +397,25 @@ func parseCfTxt(content string) []string {
 	return urls
 }
 
-// refreshCfURLs — 单次后台刷新：fetch txt → 与当前 cfg 比 → 变了才更新 cfg + cache（加锁）。
-// fetch 失败 / 内容相同 → 不动 cfg（保留当前，避免无谓写 + 抖动）。
+// refreshCfURLs — 单次后台刷新：fetch txt（Gitee 首选 → ghproxy → raw，单遍）→ 与当前 cfg 比 → 变了才更新 cfg + cache。
+// fetch 失败 / 内容相同 → 不动 cfg（保留当前，避免无谓写 + 抖动）。后台每 h 跑 + 启动立即一次，瞬时挂下轮自愈。
 func refreshCfURLs() {
-	client := &http.Client{Timeout: 8 * time.Second}
-	for _, src := range cfTxtSources {
-		resp, err := client.Get(src)
-		if err != nil {
-			continue
-		}
-		if resp.StatusCode != 200 {
-			resp.Body.Close()
-			continue
-		}
-		content, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		parsed := parseCfTxt(string(content))
-		if len(parsed) == 0 {
-			continue
-		}
-		cfgMu.RLock()
-		cur := cfg.CloudFunctionURLs
-		cfgMu.RUnlock()
-		if cfListsEqual(cur, parsed) {
-			return // 无变化，不动
-		}
-		cfgMu.Lock()
-		cfg.CloudFunctionURLs = parsed
-		cfgMu.Unlock()
-		_ = os.WriteFile(cfTxtCache, content, 0644)
-		tag := "直连"
-		if strings.Contains(src, "ghproxy.com") {
-			tag = "ghproxy"
-		}
-		log.Printf("[配置] ↻ 后台刷新 cloud_function_urls（%s）→ %v", tag, parsed)
+	parsed, tag, ok := fetchCfTxtOnce()
+	if !ok {
+		log.Print("[配置] ↻ 后台刷新 fetch 全挂，保留当前 cloud_function_urls")
 		return
 	}
-	log.Print("[配置] ↻ 后台刷新 fetch 全挂，保留当前 cloud_function_urls")
+	cfgMu.RLock()
+	cur := cfg.CloudFunctionURLs
+	cfgMu.RUnlock()
+	if cfListsEqual(cur, parsed) {
+		return // 无变化，不动
+	}
+	cfgMu.Lock()
+	cfg.CloudFunctionURLs = parsed
+	cfgMu.Unlock()
+	_ = os.WriteFile(cfTxtCache, []byte(strings.Join(parsed, "\n")+"\n"), 0644)
+	log.Printf("[配置] ↻ 后台刷新 cloud_function_urls（%s）→ %v", tag, parsed)
 }
 
 // refreshCfURLsPeriodically — 后台 goroutine：定期 fetch txt 刷新（cache-first 之上的运行时跟上）。
