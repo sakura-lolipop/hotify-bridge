@@ -4,6 +4,24 @@
 >
 > App「设置」里的"部署指引"链的就是这篇。打不开是 GitHub 被墙——用 Gitee 镜像：`gitee.com/sakura-lolipop/hotify-bridge/blob/main/docker.md`。
 
+## 🚀 一键安装（推荐，最省事）
+
+有 Docker 的 Linux 服务器 / NAS（SSH 进去），一条命令搞定——问俩问题（Gotify token + 地址），剩下全自动（拉 ACR 镜像、写配置、起容器）：
+
+```bash
+curl -fsSL https://gitee.com/sakura-lolipop/hotify-bridge/raw/main/install.sh -o install.sh && bash install.sh
+```
+
+不想交互（CI / 脚本）？环境变量传配置：
+
+```bash
+HOTIFY_TOKEN=你的gotify_client_token HOTIFY_GOTIFY_URL=https://your.gotify:port bash install.sh
+```
+
+跑完容器就起来了、配置已预填，**不用再手动编辑 + 重启**。之后改 `./hotify-bridge-data/bridge_config.yaml` 再 `docker restart hotify-bridge`。
+
+> 下面是手动步骤 / 细节，一键跑通的可跳过。
+
 ## 镜像（多架构 amd64+arm64，已实测）
 
 `docker pull` 会按你的 CPU 自动选架构（Intel 服务器/AMD NAS 拉 amd64，树莓派/ARM NAS 拉 arm64）。两个 registry 二选一：
