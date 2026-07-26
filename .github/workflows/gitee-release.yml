@@ -1,0 +1,71 @@
+name: Gitee Release（二进制镜像）
+
+# GitHub Releases 国内被墙 → 把 Go 二进制镜像到 Gitee Release（国内可达），供"免 Docker 一键脚本"下载。
+# 打 v* tag → 自动交叉编译 5 平台 → 建/取 Gitee Release → 传每个二进制。
+# workflow_dispatch + inputs.tag → 补传某个已发 tag（如 v1.1.0）。
+# 需 GITEE_USER / GITEE_TOKEN secret（同 mirror-to-gitee；token 要有 releases/projects 权限）。
+# Gitee API：建 release POST /repos/{owner}/{repo}/releases；传附件 POST .../releases/{id}/attach_files（multipart file=）。
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要传到 Gitee Release 的 tag（如 v1.1.0）'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  gitee-release:
+    runs-on: ubuntu-latest
+    env:
+      GITEE_USER: ${{ secrets.GITEE_USER }}
+      GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+      REPO: hotify-bridge
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+
+      - name: Build（交叉编译 5 平台静态二进制）
+        working-directory: go
+        run: bash build-all.sh
+
+      - name: Upload binaries to Gitee Release
+        run: |
+          set -e
+          : "${GITEE_USER:?GITEE_USER secret 没配}"
+          : "${GITEE_TOKEN:?GITEE_TOKEN secret 没配}"
+          [ -n "$TAG" ] || { echo "❌ 没拿到 tag"; exit 1; }
+          API="https://gitee.com/api/v5/repos/$GITEE_USER/$REPO"
+
+          # 1) 按 tag 取已有 release 的 id；没有就建
+          RID=$(curl -sSL "$API/releases/tags/$TAG?access_token=$GITEE_TOKEN" | jq -r '.id // empty')
+          if [ -z "$RID" ]; then
+            echo "Gitee 上无 $TAG release，创建..."
+            RID=$(curl -fsSL -X POST "$API" \
+              -H "Content-Type: application/json" \
+              -d "{\"access_token\":\"$GITEE_TOKEN\",\"tag_name\":\"$TAG\",\"name\":\"$TAG\",\"body\":\"hotify-bridge $TAG Go 二进制（GitHub Releases 国内拉不动，此处镜像）\",\"target_commitish\":\"main\"}" \
+              | jq -r '.id')
+          fi
+          echo "release_id=$RID (tag=$TAG)"
+          [ -n "$RID" ] || { echo "❌ 拿不到 release_id（token 权限？）"; exit 1; }
+
+          # 2) 逐个传二进制（attach_files，multipart file= 字段）
+          for f in go/dist/*; do
+            bn=$(basename "$f")
+            echo "→ 上传 $bn"
+            curl -fsSL -X POST "$API/releases/$RID/attach_files" \
+              -F "access_token=$GITEE_TOKEN" \
+              -F "file=@$f" \
+              | jq -r '.browser_download_url // "（无 url 返回）"'
+          done
+          echo "✅ Gitee Release $TAG 上传完成"
