@@ -57,7 +57,7 @@ jobs:
       # registry 用新版个人版域名（crpi-xxx.personal.cr.aliyuncs.com），非老版 registry.cn-xxx.aliyuncs.com。
       # step 级 if 可判 secrets（job 级不行）→ secret 空时三步全跳过，GHCR 不受牵连。
       - name: Login to ACR
-        if: ${{ github.event_name == 'push' && secrets.ACR_USERNAME != '' }}
+        if: ${{ secrets.ACR_USERNAME != '' }}   # ⚠️ 临时测试：去掉了 event==push 门，dispatch 也推；验完还原
         uses: docker/login-action@v3
         with:
           registry: crpi-gi2hyqoir87c0lus.cn-hangzhou.personal.cr.aliyuncs.com
@@ -65,7 +65,7 @@ jobs:
           password: ${{ secrets.ACR_PASSWORD }}
       - name: ACR metadata
         id: meta_acr
-        if: ${{ github.event_name == 'push' && secrets.ACR_USERNAME != '' }}
+        if: ${{ secrets.ACR_USERNAME != '' }}   # ⚠️ 临时测试：去掉了 event==push 门，dispatch 也推；验完还原
         uses: docker/metadata-action@v5
         with:
           images: crpi-gi2hyqoir87c0lus.cn-hangzhou.personal.cr.aliyuncs.com/sakura-lolipop/hotify-bridge
@@ -75,7 +75,7 @@ jobs:
             type=raw,value=latest
             type=sha,format=short
       - name: Build & push to ACR（多架构，复用 gha cache）
-        if: ${{ github.event_name == 'push' && secrets.ACR_USERNAME != '' }}
+        if: ${{ secrets.ACR_USERNAME != '' }}   # ⚠️ 临时测试：去掉了 event==push 门，dispatch 也推；验完还原
         uses: docker/build-push-action@v6
         with:
           context: .
