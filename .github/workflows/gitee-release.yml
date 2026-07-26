@@ -1,9 +1,9 @@
 name: Gitee Release（二进制镜像）
 
 # GitHub Releases 国内被墙 → 把 Go 二进制镜像到 Gitee Release（国内可达），供"免 Docker"用户下载。
-# 用第三方 action nicennnnnnnlee/action-gitee-release（治本：Gitee API 正确性 + 上传重试交给它，不再手搓 curl 踩坑）。
-# pin @v2.0.0（非 master）缓解供应链风险；它经手 GITEE_TOKEN（仅 projects 权限，泄露面小可吊销）。
-# 只发 Go 二进制（Python fallback 不上 Gitee）。tag 触发 + dispatch(inputs.tag) 可补传。
+# 用 curl 直调 Gitee API（不走第三方 action——那个 action 的 requests 全没 timeout，attach 一 stall 永久挂）。
+# 关键：每个 curl 都带 --connect-timeout + --max-time（砍挂起）+ --retry（自愈瞬时 stall）。token 只在本 workflow 内，不经第三方。
+# 流程：删旧 release（清残骸/避重名）→ 建新 → 传 5 个 Go 二进制。只发 Go（Python fallback 不上 Gitee）。
 on:
   push:
     tags: ['v*']
@@ -19,8 +19,11 @@ permissions:
 jobs:
   gitee-release:
     runs-on: ubuntu-latest
+    timeout-minutes: 25   # 兜底：5 文件 × (180s + 重试) 最坏 ~25min，别拖到 6h
     env:
       TAG: ${{ inputs.tag || github.ref_name }}
+      GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+      API: https://gitee.com/api/v5/repos/sakura-lolipop/hotify-bridge
     steps:
       - uses: actions/checkout@v4
         with:
@@ -35,33 +38,39 @@ jobs:
         working-directory: go
         run: bash build-all.sh
 
-      - name: 建 Release（已存在则跳过，下一步上传）
-        uses: nicennnnnnnlee/action-gitee-release@v2.0.0
-        continue-on-error: true   # tag 已有 release → Gitee 报"该标签已存在发行版"，正常；upload_asset 接着传
-        with:
-          gitee_action: create_release
-          gitee_owner: sakura-lolipop
-          gitee_repo: hotify-bridge
-          gitee_token: ${{ secrets.GITEE_TOKEN }}
-          gitee_tag_name: ${{ env.TAG }}
-          gitee_release_name: hotify-bridge ${{ env.TAG }}
-          gitee_release_body: |
-            Go 二进制（GitHub Releases 国内拉不动，此处镜像）。
-            免 Docker 用户：下对应平台的包直接跑。Docker 部署看 docker.md / README。
-          gitee_target_commitish: main
+      - name: 删旧 → 建新 → 传二进制（curl，全带超时+重试）
+        run: |
+          set -e
+          : "${GITEE_TOKEN:?GITEE_TOKEN secret 没配}"
+          [ -n "$TAG" ] || { echo "❌ 没拿到 tag"; exit 1; }
+          CT="--connect-timeout 10"
 
-      - name: 上传二进制到 Release（按 tag 定位，新建/已有都吃）
-        uses: nicennnnnnnlee/action-gitee-release@v2.0.0
-        with:
-          gitee_action: upload_asset
-          gitee_owner: sakura-lolipop
-          gitee_repo: hotify-bridge
-          gitee_token: ${{ secrets.GITEE_TOKEN }}
-          gitee_tag_name: ${{ env.TAG }}
-          gitee_upload_retry_times: 3
-          gitee_files: |
-            go/dist/gotify-bridge-linux-amd64
-            go/dist/gotify-bridge-linux-arm64
-            go/dist/gotify-bridge-windows-amd64.exe
-            go/dist/gotify-bridge-darwin-amd64
-            go/dist/gotify-bridge-darwin-arm64
+          # 1) 该 tag 若已有 release，先删（清之前残骸 + 避资产重名报错）
+          OLD_RID=$(curl -sSL $CT --max-time 60 "$API/releases?access_token=$GITEE_TOKEN" \
+            | jq -r ".[] | select(.tag_name==\"$TAG\") | .id" | head -1 || true)
+          if [ -n "$OLD_RID" ]; then
+            echo "删旧 release id=$OLD_RID（tag=$TAG）"
+            curl -fsSL $CT --max-time 60 -X DELETE "$API/releases/$OLD_RID?access_token=$GITEE_TOKEN" >/dev/null \
+              || echo "  (delete 非 2xx，可能已删/无权限，继续)"
+          fi
+
+          # 2) 建新 release
+          RID=$(curl -fsSL $CT --max-time 60 -X POST "$API/releases" \
+            -H "Content-Type: application/json" \
+            -d "{\"access_token\":\"$GITEE_TOKEN\",\"tag_name\":\"$TAG\",\"name\":\"hotify-bridge $TAG\",\"body\":\"Go 二进制（GitHub Releases 国内拉不动，此处镜像）。Docker 部署看 docker.md / README。\",\"target_commitish\":\"main\"}" \
+            | jq -r '.id')
+          echo "新 release_id=$RID"
+          [ -n "$RID" ] || { echo "❌ 建 release 失败（看上面返回）"; exit 1; }
+
+          # 3) 逐个传二进制（attach_files：multipart 字段名 file=，access_token 走 form field）
+          #    --max-time 180 砍挂起（真 stall），--retry 3 自愈瞬时抖动。一个失败不连累其他。
+          for f in gotify-bridge-linux-amd64 gotify-bridge-linux-arm64 gotify-bridge-windows-amd64.exe gotify-bridge-darwin-amd64 gotify-bridge-darwin-arm64; do
+            echo "→ 上传 $f"
+            curl -fsSL $CT --max-time 180 --retry 3 --retry-delay 5 \
+              -X POST "$API/releases/$RID/attach_files" \
+              -F "access_token=$GITEE_TOKEN" \
+              -F "file=@go/dist/$f" \
+              | jq -r '.browser_download_url // "（无url）"' \
+              || echo "  ⚠️ $f 传失败（继续下一个）"
+          done
+          echo "✅ Gitee Release $TAG 流程跑完"
