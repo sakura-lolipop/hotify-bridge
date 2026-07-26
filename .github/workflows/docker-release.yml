@@ -1,13 +1,13 @@
 name: Docker Build & Release
 
-# hotify-bridge 镜像 release CI —— 多架构（amd64+arm64）同时推 GHCR（海外）+ 阿里云 ACR（国内）。
-# 打 tag (v*) → buildx 出多架构镜像 → 推两个 registry；workflow_dispatch → 只构建不推（测构建）。
-#   - GHCR：公开仓用 GITHUB_TOKEN 免 secret，给海外 / 能连 ghcr 的用户。
-#   - ACR：国内拉取（ghcr 被墙）；需 ACR_USERNAME / ACR_PASSWORD 两个 secret。没配 → ACR 步骤跳过，不影响 GHCR。
-# Dockerfile builder 走 --platform=$BUILDPLATFORM 原生跑 + GOARCH=$TARGETARCH 交叉编译，多架构不慢。
+# hotify-bridge 镜像 release CI：多架构（amd64+arm64）推 GHCR（海外）+ 阿里云 ACR（国内）。
+# 两个独立 job 并行：GHCR / ACR 各自构建+推 → ACR 挂了不牵连 GHCR。
+# 打 tag(v*) → 两边都推；workflow_dispatch → GHCR 只构建不推、ACR 推（可手动触发补推/测试 ACR）。
+# ⚠️ step/job 级 if 不能用 secrets.*（GitHub 解析报错 Unrecognized named-value: 'secrets'，实测踩过）。
+#    所以不靠 secrets 做条件；ACR 凭证不对时 ACR job 自己红，GHCR job 不受影响。
 permissions:
   contents: read
-  packages: write   # 推 GHCR 需要
+  packages: write
 
 on:
   push:
@@ -15,17 +15,13 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  # ════════════ GHCR（海外）════════════
+  ghcr:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      # ════════════ GHCR（海外，始终）════════════
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
@@ -33,7 +29,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: GHCR metadata
-        id: meta_ghcr
+        id: meta
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/sakura-lolipop/hotify-bridge
@@ -42,30 +38,33 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest
             type=sha,format=short
-      - name: Build & push to GHCR（多架构，写 gha cache）
+      - name: Build & push to GHCR（多架构，海外；写 gha cache）
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name == 'push' }}
-          tags: ${{ steps.meta_ghcr.outputs.tags }}
-          labels: ${{ steps.meta_ghcr.outputs.labels }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # ════════════ 阿里云 ACR（国内，需 secret；没配则跳过，不影响上面 GHCR）════════════
-      # registry 用新版个人版域名（crpi-xxx.personal.cr.aliyuncs.com），非老版 registry.cn-xxx.aliyuncs.com。
-      # step 级 if 可判 secrets（job 级不行）→ secret 空时三步全跳过，GHCR 不受牵连。
+  # ════════════ 阿里云 ACR（国内）════════════
+  # registry 用新版个人版域名（crpi-xxx.personal.cr.aliyuncs.com），非老版 registry.cn-xxx.aliyuncs.com。
+  acr:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
       - name: Login to ACR
-        if: ${{ secrets.ACR_USERNAME != '' }}   # ⚠️ 临时测试：去掉了 event==push 门，dispatch 也推；验完还原
         uses: docker/login-action@v3
         with:
           registry: crpi-gi2hyqoir87c0lus.cn-hangzhou.personal.cr.aliyuncs.com
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
       - name: ACR metadata
-        id: meta_acr
-        if: ${{ secrets.ACR_USERNAME != '' }}   # ⚠️ 临时测试：去掉了 event==push 门，dispatch 也推；验完还原
+        id: meta
         uses: docker/metadata-action@v5
         with:
           images: crpi-gi2hyqoir87c0lus.cn-hangzhou.personal.cr.aliyuncs.com/sakura-lolipop/hotify-bridge
@@ -74,13 +73,12 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest
             type=sha,format=short
-      - name: Build & push to ACR（多架构，复用 gha cache）
-        if: ${{ secrets.ACR_USERNAME != '' }}   # ⚠️ 临时测试：去掉了 event==push 门，dispatch 也推；验完还原
+      - name: Build & push to ACR（多架构，国内；复用 gha cache 只读）
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta_acr.outputs.tags }}
-          labels: ${{ steps.meta_acr.outputs.labels }}
-          cache-from: type=gha   # 只读复用 GHCR 那次的缓存，不重复写
+          push: true   # tag + dispatch 都推（dispatch 可手动触发测试/补推 ACR）
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
