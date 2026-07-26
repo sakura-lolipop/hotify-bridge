@@ -104,6 +104,19 @@ curl -fsSL https://gitee.com/sakura-lolipop/hotify-bridge/raw/main/install.sh -o
 
 ---
 
+## 💻 不同平台怎么跑
+
+上面默认按 Linux + SSH + Docker 走。别的平台：
+
+| 平台 | 怎么办 |
+|---|---|
+| **Linux 服务器 / VPS** | 最顺：`curl -fsSL https://get.docker.com \| sh` 装 Docker → 跑 install.sh。 |
+| **Windows** | 装 [Docker Desktop](https://www.docker.com/products/docker-desktop/)，用 **Git Bash** 或 **WSL** 跑 install.sh（PowerShell 跑不了 `.sh`）。**或更省事**：直接下 `gotify-bridge-windows-amd64.exe`（[Gitee Release](https://gitee.com/sakura-lolipop/hotify-bridge/releases)）双击跑，免 Docker。 |
+| **群晖 NAS** | 套件中心装 **Container Manager** → 图形界面拉镜像跑（[docker.md 有步骤](./docker.md)）。 |
+| **威联通 / Unraid** | Container Station / 应用中心，同理。 |
+
+---
+
 ## 🆘 卡住了？
 
 | 现象 | 怎么办 |
@@ -114,6 +127,37 @@ curl -fsSL https://gitee.com/sakura-lolipop/hotify-bridge/raw/main/install.sh -o
 - **想看日志**：`docker logs -f hotify-bridge`
 - **改配置**：编辑 `./hotify-bridge-data/bridge_config.yaml`，存盘后 `docker restart hotify-bridge`。
 - **没 Docker / 不想用 Docker**：直接下二进制跑——国内从 [Gitee Release](https://gitee.com/sakura-lolipop/hotify-bridge/releases) 下，海外从 [GitHub Release](../../releases)。
+
+---
+
+## 🔒 公网部署？用 acme.sh 申请免费 HTTPS 证书
+
+`/register` 走公网**必须 HTTPS**（不然手机上报的 push token 明文裸奔）。用 [acme.sh](https://github.com/acmesh-official/acme.sh) 自动申请 Let's Encrypt 免费证书 + 自动续期：
+
+```bash
+# 1) 装 acme.sh
+curl https://get.acme.sh | sh && source ~/.bashrc
+
+# 2) 申请证书（standalone 模式，需要 80 端口空闲且指向本机）
+acme.sh --issue -d push.你的域名.com --standalone
+
+# 3) 装证书到桥的数据目录（续期后自动重启桥）
+acme.sh --install-cert -d push.你的域名.com \
+  --key-file       /opt/hotify-bridge/data/key.pem \
+  --fullchain-file /opt/hotify-bridge/data/cert.pem \
+  --reloadcmd      "docker restart hotify-bridge"
+```
+
+然后编辑 `bridge_config.yaml` 指过去（路径是**容器内**路径，证书落在挂载的 `/data` 卷里）：
+
+```
+tls_cert_file: /data/cert.pem
+tls_key_file:  /data/key.pem
+```
+
+重启桥 `docker restart hotify-bridge`，日志看到 `[注册接口] 模式=HTTPS` 就成了；App 那边地址改 `https://push.你的域名.com:8080`。
+
+> **80 端口被占 / 在 NAT 后面？** 用 acme.sh 的 **DNS 模式**（`--dns dns_dp` / `dns_ali` 等，去 DNS 后台填 token），不需要 80 端口、纯内网也能签。详见 [acme.sh dnsapi wiki](https://github.com/acmesh-official/acme.sh/wiki/dnsapi)。
 
 ---
 
