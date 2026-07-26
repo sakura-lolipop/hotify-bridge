@@ -104,16 +104,22 @@ curl -fsSL https://gitee.com/sakura-lolipop/hotify-bridge/raw/main/install.sh -o
 
 ---
 
-## 💻 不同平台怎么跑
+## 💻 不同平台怎么跑（下对应 Go 二进制直接跑，免 Docker）
 
-上面默认按 Linux + SSH + Docker 走。别的平台：
+桥是**纯 Go 静态二进制**，每个平台一个文件，**下了直接跑**——不用装 Docker、不用装 Go。从 [Gitee Release](https://gitee.com/sakura-lolipop/hotify-bridge/releases)（国内）下你平台对应的：
 
-| 平台 | 怎么办 |
-|---|---|
-| **Linux 服务器 / VPS** | 最顺：`curl -fsSL https://get.docker.com \| sh` 装 Docker → 跑 install.sh。 |
-| **Windows** | 装 [Docker Desktop](https://www.docker.com/products/docker-desktop/)，用 **Git Bash** 或 **WSL** 跑 install.sh（PowerShell 跑不了 `.sh`）。**或更省事**：直接下 `gotify-bridge-windows-amd64.exe`（[Gitee Release](https://gitee.com/sakura-lolipop/hotify-bridge/releases)）双击跑，免 Docker。 |
-| **群晖 NAS** | 套件中心装 **Container Manager** → 图形界面拉镜像跑（[docker.md 有步骤](./docker.md)）。 |
-| **威联通 / Unraid** | Container Station / 应用中心，同理。 |
+| 平台 | 下哪个 | 怎么跑 |
+|---|---|---|
+| **Linux x86_64**（VPS / 服务器） | `gotify-bridge-linux-amd64` | `chmod +x gotify-bridge-linux-amd64 && ./gotify-bridge-linux-amd64` |
+| **Linux ARM64**（树莓派 4/5、ARM NAS） | `gotify-bridge-linux-arm64` | 同上 |
+| **Windows** | `gotify-bridge-windows-amd64.exe` | 双击，或 PowerShell `.\gotify-bridge-windows-amd64.exe` |
+| **macOS Apple Silicon**（M1/M2/M3） | `gotify-bridge-darwin-arm64` | `chmod +x ... && ./gotify-bridge-darwin-arm64`（首次"系统设置→隐私与安全"放行一下） |
+| **macOS Intel** | `gotify-bridge-darwin-amd64` | 同上 |
+
+跑起来后，首启在和二进制**同目录**自动生成 `bridge_config.yaml` → 编辑填 `gotify_token` + Gotify 地址 → 再跑一次命令重启。
+
+> **想长期跑 / 开机自启**（Linux）：用 systemd 包一下（模板见 [README_FULL](./README_FULL.md)）。
+> **就想要 Docker / NAS 图形界面**：看 [docker.md](./docker.md)，或本页上面的 install.sh 一键。
 
 ---
 
