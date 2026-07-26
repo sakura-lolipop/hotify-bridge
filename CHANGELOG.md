@@ -2,10 +2,17 @@
 
 桥（hotify-bridge）的 notable 变化。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/)。
 
-## [v1.1.1] — 待发
+## [v1.1.2] — 2026-07-27
 
 ### Fixed
-- **重启后回补全量重放 bug**（用户反馈"有时候把全部消息再推一遍"）：高水位 `lastMsgID` 改持久化（`last_msg_id` 文件），`initLastID` 启动优先读落盘值续传（重启只补真漏的，不回放）；`backfill` 兜底——水位=0（启动撞 Gotify 不可达、`initLastID` 失败）时设到本批最大 id、一条不推（宁可漏断档绝不重放刷屏）。加 2 测试（落盘续传 + 水位=0 零重放，注册假设备+计数云函数验）。
+- **重启后回补全量重放 bug**（用户反馈"有时候把全部消息再推一遍"）：高水位 `lastMsgID` 改持久化（`last_msg_id` 文件），`initLastID` 启动优先读落盘值续传（重启只补真漏的，不回放）；`backfill` 兜底——水位=0（启动撞 Gotify 不可达、`initLastID` 失败）时设到本批最大 id、一条不推（宁可漏断档绝不重放刷屏）。加 2 测试。
+- **cloud_function_urls 空配 → fetch 全挂 → 收不到推送**（PandaSoos 反馈）：fetch 源加 **Gitee raw** 国内首选，ghproxy/raw 退为兜底；`fetchCfTxtOnce` 统一多源；冷启动 2 次重试 + cache 兜底；后台刷新复用 helper。保住自动更新且可靠。加 2 测试（fetch + 多源兜底）。
+
+### Changed
+- **docker compose 走环境变量（SSH-light）**：`docker-compose.yml` 加 `environment:`（`GOTIFY_HTTP_URL` / `GOTIFY_CLIENT_TOKEN` 从 `.env` 读，免 SSH 编辑 `bridge_config.yaml`）；加 `.env.example`；docker.md/README 把 compose 提成首选、install.sh 降可选。
+- `scripts/gitee-upload.sh` create 加重试 + "已存在则复用"兜底（Gitee create 偶发抽风返空 id）。
+
+> v1.1.1 曾短暂发布后移除（被 v1.1.2 取代，两修复合并进 v1.1.2）。
 
 ---
 

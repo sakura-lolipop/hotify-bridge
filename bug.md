@@ -14,7 +14,7 @@
   - 抽 `fetchCfTxtOnce` helper 统一多源尝试；冷启动 `fetchCfURLsFromTxt` 加 **2 次重试 + cache 兜底**；`refreshCfURLs`（后台每 h + 启动立即一次）复用 helper，瞬时挂下轮自愈。
   - **保住自动更新**（cloud_function_urls.txt 改了桥跟上）且**可靠**（Gitee 通则秒成）——比预填死值好。
   - 测试：`TestFetchCfURLsFromTxt` + `TestFetchCfTxtOnceFallback`（首源 500→用次源）。`go test` 全过。
-- **状态**：🔧 已提交 main，待发 **v1.1.2**。
+- **状态**：✅ v1.1.2 已发（2026-07-27：GitHub Release + GHCR/ACR 镜像 + Gitee 二进制全齐）。
 - **教训**：又犯了"开发机能 fetch 成功就以为用户也行"（同 GHCR 那次 dev≠用户）。终端用户网络（GFW）下 ghproxy/raw 不稳，得有国内可达源（Gitee）兜底。
 
 ---

@@ -7,7 +7,7 @@
 
 ## 下一步 / 待办
 - [x] **v1.1.1（去重重放修复）** ✅ 已发。
-- [ ] **发 v1.1.2（patch）**：cloud_function_urls Gitee-fetch 修复（PandaSoos 反馈"空配收不到推送"，见 [bug.md](./bug.md) #2）。`git tag v1.1.2 && git push origin v1.1.2` → 触发 go-release/docker-release → 本地 `GITEE_TOKEN=新令牌 bash scripts/gitee-upload.sh v1.1.2` 传 Gitee。
+- [x] **v1.1.2** ✅ 已发（cloud_function_urls Gitee-fetch 修复 + 去重重放修复；GitHub Release + GHCR/ACR 镜像 + Gitee 二进制全齐）。
 - [ ] **App「部署指引」外链改指 Gitee**：HotifyNEXT App 仓里那条链接，从 GitHub README 改成 `gitee.com/sakura-lolipop/hotify-bridge/blob/main/docker.md`（国内可达）。不在本仓改。
 - [ ] **GHCR 翻 Public（可选/低优先）**：仅海外用户需要；Hotify 国内为主、ACR 已覆盖，可跳过，或干脆删 `docker-release.yml` 的 ghcr job 只留 ACR。
 - [ ] **Gitee 令牌轮换**：之前在对话里露过的旧令牌作废，去 gitee→私人令牌重建；GitHub 的 `GITEE_TOKEN` secret 也换成新的。

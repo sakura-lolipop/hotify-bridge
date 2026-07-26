@@ -40,12 +40,20 @@ if [ -n "$OLD" ]; then
   sleep 2   # 给 Gitee 传播时间，免得立刻建撞"该标签已存在发行版"
 fi
 
-echo "=== 建新 release ==="
-RID=$(curl -fsSL --max-time 30 -X POST "$API/releases" -H "Content-Type: application/json" \
-  -d "{\"access_token\":\"$TOKEN\",\"tag_name\":\"$TAG\",\"name\":\"hotify-bridge $TAG\",\"body\":\"Go 二进制（GitHub Releases 国内拉不动，此处镜像）。免 Docker 用户下对应平台包直接跑；Docker 部署看 docker.md / README。\",\"target_commitish\":\"main\"}" \
-  2>/dev/null | grep -oE '"id":[0-9]+' | head -1 | cut -d: -f2)
+echo "=== 建新 release（带重试：Gitee create 偶发抽风返空 id）==="
+RID=""
+for attempt in 1 2 3 4; do
+  RID=$(curl -fsSL --max-time 30 -X POST "$API/releases" -H "Content-Type: application/json" \
+    -d "{\"access_token\":\"$TOKEN\",\"tag_name\":\"$TAG\",\"name\":\"hotify-bridge $TAG\",\"body\":\"Go 二进制（GitHub Releases 国内拉不动，此处镜像）。免 Docker 用户下对应平台包直接跑；Docker 部署看 docker.md / README。\",\"target_commitish\":\"main\"}" \
+    2>/dev/null | grep -oE '"id":[0-9]+' | head -1 | cut -d: -f2)
+  [ -n "$RID" ] && break
+  # create 没返 id：可能前一次已建成（grep 漏了）/ 已存在 → 按 tag 找复用
+  RID=$(get_rid_by_tag)
+  [ -n "$RID" ] && { echo "（release 已存在，复用 id=$RID）"; break; }
+  echo "  建 release 第 $attempt 次没拿到 id，重试..."; sleep 2
+done
 echo "新 release id=$RID"
-[ -n "$RID" ] || { echo "❌ 建 release 失败（Gitee 可能抽风，重试一次）"; exit 1; }
+[ -n "$RID" ] || { echo "❌ 建 release 多次失败（Gitee 抽风）；过会儿重跑本脚本"; exit 1; }
 
 echo "=== 传 5 个二进制（国内直连）==="
 for f in gotify-bridge-linux-amd64 gotify-bridge-linux-arm64 gotify-bridge-windows-amd64.exe gotify-bridge-darwin-amd64 gotify-bridge-darwin-arm64; do
