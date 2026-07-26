@@ -1,10 +1,9 @@
 name: Gitee Release（二进制镜像）
 
-# GitHub Releases 国内被墙 → 把 Go 二进制镜像到 Gitee Release（国内可达），供"免 Docker 一键脚本"下载。
-# 打 v* tag → 自动交叉编译 5 平台 → 建/取 Gitee Release → 传每个二进制。
-# workflow_dispatch + inputs.tag → 补传某个已发 tag（如 v1.1.0）。
-# 需 GITEE_USER / GITEE_TOKEN secret（同 mirror-to-gitee；token 要有 releases/projects 权限）。
-# Gitee API：建 release POST /repos/{owner}/{repo}/releases；传附件 POST .../releases/{id}/attach_files（multipart file=）。
+# GitHub Releases 国内被墙 → 把 Go 二进制镜像到 Gitee Release（国内可达），供"免 Docker"用户下载。
+# 用第三方 action nicennnnnnnlee/action-gitee-release（治本：Gitee API 正确性 + 上传重试交给它，不再手搓 curl 踩坑）。
+# pin @v2.0.0（非 master）缓解供应链风险；它经手 GITEE_TOKEN（仅 projects 权限，泄露面小可吊销）。
+# 只发 Go 二进制（Python fallback 不上 Gitee）。tag 触发 + dispatch(inputs.tag) 可补传。
 on:
   push:
     tags: ['v*']
@@ -21,9 +20,6 @@ jobs:
   gitee-release:
     runs-on: ubuntu-latest
     env:
-      GITEE_USER: ${{ secrets.GITEE_USER }}
-      GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
-      REPO: hotify-bridge
       TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
@@ -35,45 +31,27 @@ jobs:
           go-version-file: go/go.mod
           cache-dependency-path: go/go.sum
 
-      - name: Build（交叉编译 5 平台静态二进制）
+      - name: Build（交叉编译 5 平台 Go 静态二进制）
         working-directory: go
         run: bash build-all.sh
 
-      - name: Upload binaries to Gitee Release
-        run: |
-          set -e
-          : "${GITEE_USER:?GITEE_USER secret 没配}"
-          : "${GITEE_TOKEN:?GITEE_TOKEN secret 没配}"
-          [ -n "$TAG" ] || { echo "❌ 没拿到 tag"; exit 1; }
-          API="https://gitee.com/api/v5/repos/sakura-lolipop/$REPO"
-
-          # 1) 建 release —— 打印原始响应排错（响应体不含 token，安全）。create 没返 id 则 GET 列表找。
-          #    ⚠️ Gitee 没有 GitHub 的 /releases/tags/{tag} 路由（实测 405），别用。
-          echo "::group::POST $API/releases（原始响应）"
-          RESP=$(curl -sSL --connect-timeout 15 --max-time 60 -w '\n__HTTP__%{http_code}\n' -X POST "$API/releases" \
-            -H "Content-Type: application/json" \
-            -d "{\"access_token\":\"$GITEE_TOKEN\",\"tag_name\":\"$TAG\",\"name\":\"$TAG\",\"body\":\"hotify-bridge $TAG\",\"target_commitish\":\"main\"}")
-          printf '%s\n' "$RESP"
-          RID=$(printf '%s' "$RESP" | jq -r '.id // empty' 2>/dev/null || true)
-          echo "rid from create = ${RID:-<空>}"
-          echo "::endgroup::"
-          if [ -z "$RID" ]; then
-            echo "::group::GET $API/releases（找已存在的 $TAG，原始响应）"
-            LRESP=$(curl -sSL --connect-timeout 15 --max-time 60 -w '\n__HTTP__%{http_code}\n' "$API/releases?access_token=$GITEE_TOKEN")
-            printf '%s\n' "$LRESP"
-            RID=$(printf '%s' "$LRESP" | jq -r ".[] | select(.tag_name==\"$TAG\") | .id" 2>/dev/null | head -1 || true)
-            echo "rid from list = ${RID:-<空>}"
-            echo "::endgroup::"
-          fi
-          [ -n "$RID" ] || { echo "❌ 拿不到 release_id——看上面 ::group:: 原始响应定位（token scope / 端点 / 返回格式）"; exit 1; }
-
-          # 2) 逐个传二进制（attach_files，multipart file= 字段）
-          for f in go/dist/*; do
-            bn=$(basename "$f")
-            echo "→ 上传 $bn"
-            curl -fsSL --connect-timeout 15 --max-time 180 -X POST "$API/releases/$RID/attach_files" \
-              -F "access_token=$GITEE_TOKEN" \
-              -F "file=@$f" \
-              | jq -r '.browser_download_url // "（无 url 返回）"'
-          done
-          echo "✅ Gitee Release $TAG 上传完成"
+      - name: 建 Gitee Release 并上传二进制
+        uses: nicennnnnnnlee/action-gitee-release@v2.0.0
+        with:
+          gitee_action: create_release
+          gitee_owner: sakura-lolipop
+          gitee_repo: hotify-bridge
+          gitee_token: ${{ secrets.GITEE_TOKEN }}
+          gitee_tag_name: ${{ env.TAG }}
+          gitee_release_name: hotify-bridge ${{ env.TAG }}
+          gitee_release_body: |
+            Go 二进制（GitHub Releases 国内拉不动，此处镜像）。
+            免 Docker 用户：下对应平台的包直接跑。Docker 部署看 docker.md / README。
+          gitee_target_commitish: main
+          gitee_upload_retry_times: 3
+          gitee_files: |
+            go/dist/gotify-bridge-linux-amd64
+            go/dist/gotify-bridge-linux-arm64
+            go/dist/gotify-bridge-windows-amd64.exe
+            go/dist/gotify-bridge-darwin-amd64
+            go/dist/gotify-bridge-darwin-arm64
