@@ -51,6 +51,35 @@ go build -o gotify-bridge .          # 单平台；或 bash build-all.sh 出全�
 # Python fallback（Go 不可用）：pip install websockets && python -u gotify_pushkit_bridge.py
 ```
 
+## 🐳 Docker / 容器部署（NAS 推荐）
+
+NAS（Synology Container Manager / QNAP Container Station / Unraid）或任何装了 Docker 的服务器，最省事——不用装 Go、不用下二进制，`docker pull` 即用。镜像随发版更新，**amd64 + arm64 多架构**自动匹配你的设备（x86 服务器 / ARM NAS / 树莓派）。
+
+```bash
+docker pull ghcr.io/sakura-lolipop/hotify-bridge:latest
+
+# 跑起来：映射 8080 端口 + 挂 ./data 卷持久化配置/状态
+docker run -d --name hotify-bridge --restart unless-stopped \
+  -p 8080:8080 -v "$PWD/data:/data" \
+  ghcr.io/sakura-lolipop/hotify-bridge:latest
+
+# 首启在 ./data/ 生成 bridge_config.yaml → 编辑填 gotify_token + cloud_function_urls → 重启
+docker restart hotify-bridge
+```
+
+或用仓库自带的 [`docker-compose.yml`](./docker-compose.yml)：`docker compose up -d`。
+
+> **⚠️ Gotify 地址在容器里语义不同（Docker 部署最容易踩的坑）**：桥把「只填端口」当成同机 `127.0.0.1`，但**容器里 `127.0.0.1` 是容器自己**，够不到 Gotify。所以 `bridge_config.yaml` 的 `gotify_url` 按拓扑填：
+> - Gotify 在**同机另一容器**：和桥放同一 docker network，填 `http://<gotify 容器名>:<端口>`（如 `http://gotify:80`）
+> - Gotify 在**宿主机**（非容器）：compose 放开 `extra_hosts: ["host.docker.internal:host-gateway"]`，填 `http://host.docker.internal:<端口>`
+> - Gotify 在**远程/域名**：直接填完整 `https://你的域名:<端口>` URL，无需特殊处理
+
+**NAS 图形界面要点**（Synology Container Manager / QNAP Container Station）：镜像名填 `ghcr.io/sakura-lolipop/hotify-bridge:latest`；端口映射 `8080 → 8080`；卷映射容器的 `/data` 到一个宿主目录（如 `/docker/hotify-bridge/data`）；首启后去那个目录改 `bridge_config.yaml`，重启容器生效。
+
+**公网 HTTPS**：`/register` 默认明文，公网上报 push token 会裸奔。二选一：① 前置反代（Caddy / Traefik / Nginx）终结 TLS 再转给 8080；② 在 `bridge_config.yaml` 配 `tls_cert_file` / `tls_key_file`（证书文件**挂进容器**，路径填容器内路径，如 `/data/cert.pem`）。
+
+> 📦 首次发版后镜像在 GHCR 默认 private；要公开拉取，到 GitHub → 你的头像 → Packages → `hotify-bridge` → Package settings，把 Change visibility 改成 Public。
+
 ## ⚙️ 配置
 Gotify 配置 = **first-set wins**（照 SSH 主机指纹 TOFU）：桥【未配置】时收 App 首次 `POST /register` 上报（持久化到 `bridge_config.yaml` = 锁定），【已配置】后 App 再发的 gotify 一律忽略——**防公网攻击者抢首注把后端改成他的 Gotify**。要零赛跑：在 yaml 直接预填 gotify（桥启动即锁）。env 仅启动兜底；push token 则每次都刷新。
 

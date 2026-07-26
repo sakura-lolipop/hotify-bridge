@@ -42,6 +42,35 @@ python -u gotify_pushkit_bridge.py   # first run auto-generates bridge_config.ya
 # → edit bridge_config.yaml: fill gotify_token + cloud_function_urls, restart
 ```
 
+## 🐳 Docker / Container deploy (recommended for NAS)
+
+For NAS (Synology Container Manager / QNAP Container Station / Unraid) or any server with Docker — no Go toolchain, no binary download, just `docker pull`. The image ships for **amd64 + arm64** (auto-matched: x86 servers / ARM NAS / Raspberry Pi).
+
+```bash
+docker pull ghcr.io/sakura-lolipop/hotify-bridge:latest
+
+# Run it: map port 8080 + mount ./data to persist config/state
+docker run -d --name hotify-bridge --restart unless-stopped \
+  -p 8080:8080 -v "$PWD/data:/data" \
+  ghcr.io/sakura-lolipop/hotify-bridge:latest
+
+# First run generates ./data/bridge_config.yaml → edit (gotify_token + cloud_function_urls) → restart
+docker restart hotify-bridge
+```
+
+Or use the repo's [`docker-compose.yml`](./docker-compose.yml): `docker compose up -d`.
+
+> **⚠️ The Gotify address means something different inside a container (the #1 Docker gotcha).** The bridge treats a "bare port" as a co-located `127.0.0.1`, but **inside a container `127.0.0.1` is the container itself** — it can't reach Gotify. So set `gotify_url` in `bridge_config.yaml` by topology:
+> - Gotify in **another container on the same host**: put both on the same docker network, use `http://<gotify-container-name>:<port>` (e.g. `http://gotify:80`)
+> - Gotify on the **host** (not containerized): uncomment `extra_hosts: ["host.docker.internal:host-gateway"]` in compose, use `http://host.docker.internal:<port>`
+> - Gotify on a **remote host / domain**: just use the full `https://your-domain:<port>` URL — nothing special needed
+
+**NAS GUI notes** (Synology Container Manager / QNAP Container Station): image `ghcr.io/sakura-lolipop/hotify-bridge:latest`; port `8080 → 8080`; volume-map the container's `/data` to a host folder (e.g. `/docker/hotify-bridge/data`); after first start edit `bridge_config.yaml` in that folder, then restart the container.
+
+**Public HTTPS**: `/register` defaults to plaintext — a push token uploaded over the public internet would travel in cleartext. Either ① put a reverse proxy (Caddy / Traefik / Nginx) in front to terminate TLS and forward to 8080, or ② set `tls_cert_file` / `tls_key_file` in `bridge_config.yaml` (mount the cert **into the container**, paths are container-internal, e.g. `/data/cert.pem`).
+
+> 📦 After the first release the GHCR image is private by default; to allow public pulls, go to GitHub → your avatar → Packages → `hotify-bridge` → Package settings → Change visibility to Public.
+
 ## ⚙️ Configuration
 Gotify config is read in priority order: **app upload** (`POST /register`, persisted to `bridge_config.yaml`) > **environment variables** > nothing (`waiting for app`).
 

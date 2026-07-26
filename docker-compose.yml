@@ -1,0 +1,35 @@
+# docker-compose.yml —— hotify-bridge 容器编排（NAS / 自托管推荐）。
+# 用法：把本文件放一个目录，docker compose up -d。
+# 首启后去 ./data/bridge_config.yaml 填 gotify_token + cloud_function_urls，再 docker compose restart。
+
+services:
+  hotify-bridge:
+    # 公开镜像（GHCR，发版即更新）。要本地源码构建，注释掉 image:、放开下面 build:。
+    image: ghcr.io/sakura-lolipop/hotify-bridge:latest
+    # build: .           # 本地 docker build（用仓根 Dockerfile）
+
+    container_name: hotify-bridge
+    restart: unless-stopped
+
+    # /register 端口。左侧是宿主机端口（App 上报 push token 走这），右侧容器内固定 8080。
+    # 要改宿主端口改左侧即可；想改容器内端口→bridge_config.yaml 设 register_port 并把右侧一起改。
+    ports:
+      - "8080:8080"
+
+    # 状态持久化：bridge_config.yaml / push_tokens.json / subscribe_status.json 都落 /data。
+    # ./data 是宿主机目录（compose 文件旁边自建），首启自动生成带注释的 bridge_config.yaml。
+    volumes:
+      - ./data:/data
+
+    # ── Gotify 寻址（容器里 127.0.0.1 = 容器自己，不是宿主/gotify！必看 README「Docker」节）──
+    #
+    # A) Gotify 在【同机另一容器】：把它们放同一 docker network，bridge_config.yaml 填
+    #    gotify_url: http://<gotify 容器名>:<端口>   （例：http://gotify:80）
+    #    本 compose 没建自定义 network；如要跨容器互访，加 networks: 自定义网或把 gotify 也 compose 起来共享。
+    #
+    # B) Gotify 在【宿主机】（非容器，或 host 网络模式）：放开下面 extra_hosts，让容器能寻址宿主；
+    #    bridge_config.yaml 填 gotify_url: http://host.docker.internal:<端口>
+    # extra_hosts:
+    #   - "host.docker.internal:host-gateway"
+    #
+    # C) Gotify 在【远程/域名】：直接 bridge_config.yaml 填完整 https URL，无需本节特殊处理。

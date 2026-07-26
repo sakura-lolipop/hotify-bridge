@@ -7,6 +7,8 @@ bridge_config.json
 bridge_config.yaml
 push_tokens.json
 agconnect-services.json
+# CP1 安卓推送验证脚本（含设备 token，本地一次性；CP2 的安卓 CF 另起文件入库）
+pushverify/push_android.py
 
 # === Python ===
 __pycache__/
@@ -32,6 +34,8 @@ cloud_function_urls.cache.txt
 # === Go 构建产物（CP0 起，Go 桥在 go/ 子目录；源码 go.mod/*.go 入库）===
 go/gotify-bridge.exe
 go/gotify-bridge
+go/hotify-bridge
+go/hotify-bridge.exe
 go/*.test
 go/*.out
 go/dist/

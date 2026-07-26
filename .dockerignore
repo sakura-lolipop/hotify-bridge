@@ -1,0 +1,60 @@
+# .dockerignore —— 控制 docker build 上下文，防机密进镜像 + 缩体积
+# 镜像应无菌：配置/状态都由挂载卷提供，绝不 baked-in。
+
+# === 机密 / 状态（含真 token，绝不进镜像）===
+# ⚠️ go/bridge_config.yaml 是本机测试配置、含真 gotify_token，必须挡掉
+bridge_config.yaml
+go/bridge_config.yaml
+push_tokens.json
+subscribe_status.json
+private*
+*_private.json
+*private.json
+private.md
+private.json
+agconnect-services.json
+
+# === Git ===
+.git/
+.gitignore
+
+# === Go 构建产物 / 本地二进制（镜像自己从源码编，不要这些）===
+go/dist/
+go/hotify-bridge
+go/hotify-bridge.exe
+go/*.test
+go/*.out
+
+# === Python 构建产物 ===
+__pycache__/
+*.pyc
+.venv/
+venv/
+build/
+dist/
+*.spec
+
+# === 本地联调沙箱 / 验证脚本（含 token/IP/uuid）===
+test_local/
+pushverify/
+
+# === cloud_function_urls 缓存 ===
+cloud_function_urls.cache.txt
+
+# === 文档 / 截图 / 归档（镜像不需要）===
+docs/
+screenshots/
+*.zip
+archive/
+新建文件夹/
+
+# === 嵌套工作区 / 其他项目 ===
+bark/
+
+# === 通用 ===
+*.log
+.env
+# README/CHANGELOG/BRIDGE 纯文档，镜像不需要；LICENSE 留着（MIT 发布镜像该带版权声明）
+README*.md
+CHANGELOG.md
+BRIDGE.md
