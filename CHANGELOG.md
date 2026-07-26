@@ -2,6 +2,19 @@
 
 桥（hotify-bridge）的 notable 变化。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/)。
 
+## [v1.1.0] — 2026-07-26
+
+### Added
+- **Docker 化 + 多架构镜像**：多阶段 `Dockerfile`（buildx amd64+arm64；`GOPROXY=goproxy.cn` 让国内 `docker build` 能编——proxy.golang.org 被墙）；`docker-compose.yml`；`.dockerignore`（挡 `go/bridge_config.yaml` 真 token 进镜像）。部署指南见 [`docker.md`](./docker.md)。
+- **国内镜像（阿里云 ACR）**：`docker-release.yml` 发版自动多架构双推 **GHCR（海外）+ 阿里云 ACR 个人版（国内，ghcr.io 被墙）**。ACR 个人版对外提供多架构 manifest **已实测**（amd64+arm64 都在）。国内 NAS `docker pull crpi-gi2hyqoir87c0lus.cn-hangzhou.personal.cr.aliyuncs.com/sakura-lolipop/hotify-bridge`。
+- **Gitee 镜像**：`mirror-to-gitee.yml` 自动 GitHub→Gitee（文档/克隆国内可达，App「部署指引」外链指 Gitee）。
+- **`docker.md`**：NAS GUI、Gotify 容器内寻址坑、公网 HTTPS、排错。
+
+### Fixed
+- `.gitignore` 补 `hotify-bridge` 本地二进制（原只挡 `gotify-bridge`，拼写漏）。
+
+---
+
 ## [Go 桥重写] — 2026-07-08
 
 Python→Go 重写（CP0-CP5），`go/` 子目录（Python 留 repo 根作 fallback）。单 `main` 包 6 源文件 + 4 测试，唯一外部依赖 `gorilla/websocket`。配置/文件/线契约与 Python 完全通用（App/云函数/Gotify 察觉不到换语言）。
