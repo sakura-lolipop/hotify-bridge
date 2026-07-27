@@ -252,11 +252,14 @@ func sendToHuawei(title, message string, priority int, extras json.RawMessage, t
 			log.Printf("[PushKit] ⚠️ 本轮 0 台成功，疑系统性故障，保留全部 %d 个疑似失效 token（不删）：%v", len(dead), dead)
 			dead = dead[:0] // 一台都不删（防 app 包名配错全台返 80300007 被误触发全锅端）
 		} else {
-			t := loadTokens() // 重新读（期间可能有新 register），避免覆盖
+			// tokensMu 守事务——与 processRegister 的 token 写互斥，确保 load→delete→save 期间新注册的 token 不被覆盖丢失
+			tokensMu.Lock()
+			t := loadTokens() // 重新读（拿最新，含期间新 register 的）
 			for _, d := range dead {
 				delete(t, d)
 			}
 			saveTokens(t)
+			tokensMu.Unlock()
 			log.Printf("[PushKit] 清理 %d 个失效 token：%v", len(dead), dead)
 		}
 	}

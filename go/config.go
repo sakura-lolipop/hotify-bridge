@@ -50,9 +50,11 @@ func cfgDefaults() Config {
 }
 
 var (
-	cfg    Config        // 运行时配置；initConfig 填，processRegister 改动态项，keepSubscribed 读
-	cfgMu  sync.RWMutex  // register 写 / subscriber 读
-	fileMu sync.Mutex    // 4 文件 I/O 守卫（对应 Python _file_lock）：tokens/subscribe_status/bridge_config 并发 load/save 防半写
+	cfg       Config        // 运行时配置；initConfig 填，processRegister 改动态项，keepSubscribed 读
+	cfgMu     sync.RWMutex  // register 写 / subscriber 读
+	fileMu    sync.Mutex    // 4 文件 I/O 守卫（对应 Python _file_lock）：tokens/subscribe_status/bridge_config 并发 load/save 防半写
+	tokensMu  sync.Mutex    // 守 tokens 的 load→改→save 事务（防 processRegister 写 与 sendToHuawei 死 token 清理 并发互覆盖丢 token）
+	subStatMu sync.Mutex    // 同上，subscribe_status 的 load→改→save 事务
 )
 
 // ──────────────────────────── 宽松解析器（镜像 Python load_bridge_config）────────────────────────────

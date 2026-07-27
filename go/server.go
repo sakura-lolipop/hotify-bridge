@@ -111,12 +111,15 @@ func processRegister(payload map[string]any) registerResponse {
 	resp := registerResponse{OK: true}
 	deviceKnown := false
 
-	// 1) push token：每次写（token 会刷新；空 → 跳过）
+	// 1) push token：每次写（token 会刷新；空 → 跳过）。
+	// tokensMu 守 load→改→save 事务——防与 sendToHuawei 死 token 清理并发互覆盖（推送期间 App 注册新设备，清理的 load→delete→save 会把新 token 覆盖丢失）。
 	if pushToken != "" {
+		tokensMu.Lock()
 		tokens := loadTokens()
 		_, deviceKnown = tokens[client]
 		tokens[client] = pushToken
 		saveTokens(tokens)
+		tokensMu.Unlock()
 		known := "新设备"
 		if deviceKnown {
 			known = "已登记/刷新"
@@ -124,41 +127,42 @@ func processRegister(payload map[string]any) registerResponse {
 		log.Printf("[注册] %s push token -> %s... (%s)", client, mask(pushToken), known)
 	}
 
-	// 2) subscribed（每次写，不锁定——首注锁定只管 gotify；走 push_token 同款"每次刷新"路径）
+	// 2) subscribed（每次写，不锁定——首注锁定只管 gotify；走 push_token 同款"每次刷新"路径）。
+	// subStatMu 守事务，防并发 register（不同 client）互覆盖。
 	if sub, ok := payload["subscribed"]; ok {
+		subStatMu.Lock()
 		status := loadSubscribeStatus()
 		status[client] = toBool(sub)
+		nowSub := status[client]
 		saveSubscribeStatus(status)
+		subStatMu.Unlock()
 		s := "已取消"
-		if status[client] {
+		if nowSub {
 			s = "订阅"
 		}
 		log.Printf("[注册] %s subscribed=%s", client, s)
 	}
 
-	// 3) gotify：first-set-wins（防公网抢首注改后端）
+	// 3) gotify：first-set-wins（防公网抢首注改后端）。
+	// check+write 合在一个 cfgMu.Lock → 防 TOCTOU（原 check 用 RLock + write 用 Lock 两段不原子，并发抢首注都读到 already=false 都写）。
 	gurl := normalizeGotifyAddr(getString(payload, "gotify_url"))
 	gtok := getString(payload, "gotify_token")
-	cfgMu.RLock()
+	cfgMu.Lock()
 	already := cfg.GotifyURL != "" && cfg.GotifyToken != ""
-	cfgMu.RUnlock()
-	if !already {
-		if gurl != "" && gtok != "" {
-			cfgMu.Lock()
-			cfg.GotifyURL = gurl
-			cfg.GotifyToken = gtok
-			cfgMu.Unlock()
-			saveBridgeConfig() // 持久化先于 200（crash-safe：save 后 crash → 重启已锁，App 重试得 ignored_gotify）
-			resp.GotifySet = true
-			log.Printf("[注册] 首次收到 App 的 Gotify 配置，已保存：url=%s token=***已设置***", gurl)
-			go autodetectLocalGotify() // 后台探同机 Gotify ~9s，不阻塞 200（HAP 8s connectTimeout）
-		}
-		// App 没带 gotify（纯 token 刷新）→ 桥仍 waiting，不动配置
-	} else {
-		if gurl != "" || gtok != "" { // 桥已配置 → App 的 gotify 一律忽略（防改后端）
-			resp.IgnoredGotify = true
-			log.Printf("[注册] Hotify 推送服务配置已存在，本次忽略。需要修改 Gotify 配置：手动修改 bridge_config.yaml 后重启 Hotify 推送服务")
-		}
+	if !already && gurl != "" && gtok != "" {
+		cfg.GotifyURL = gurl
+		cfg.GotifyToken = gtok
+		resp.GotifySet = true
+	} else if already && (gurl != "" || gtok != "") {
+		resp.IgnoredGotify = true
+	}
+	cfgMu.Unlock()
+	if resp.GotifySet {
+		saveBridgeConfig() // 持久化先于 200（crash-safe：save 后 crash → 重启已锁，App 重试得 ignored_gotify）
+		log.Printf("[注册] 首次收到 App 的 Gotify 配置，已保存：url=%s token=***已设置***", gurl)
+		go autodetectLocalGotify() // 后台探同机 Gotify ~9s，不阻塞 200（HAP 8s connectTimeout）
+	} else if resp.IgnoredGotify {
+		log.Printf("[注册] Hotify 推送服务配置已存在，本次忽略。需要修改 Gotify 配置：手动修改 bridge_config.yaml 后重启 Hotify 推送服务")
 	}
 	resp.DeviceKnown = deviceKnown
 
