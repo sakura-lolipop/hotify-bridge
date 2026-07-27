@@ -19,13 +19,14 @@ TAG="${1:-$(git describe --tags --abbrev=0 2>/dev/null)}"
 OWNER="sakura-lolipop"; REPO="hotify-bridge"
 API="https://gitee.com/api/v5/repos/$OWNER/$REPO"
 
-# 按 tag 取 release id（有 jq 用 jq 精确匹配；没 jq 取列表第一个——适合"目标 tag 是最新一个"的常见情形）
+# 按 tag 取 release id。需 jq 精确匹配——**无 jq 时返空跳过删旧，绝不 grep-first 兜底**
+# （grep-first 会拿列表第一个 release 的 id，可能误删别的 tag 的 release——实测踩过：传 v1.1.3 误删了 v1.1.2）。
 get_rid_by_tag() {
   local resp; resp=$(curl -sSL --max-time 30 "$API/releases?access_token=$TOKEN" 2>/dev/null)
   if command -v jq >/dev/null 2>&1; then
     echo "$resp" | jq -r ".[] | select(.tag_name==\"$TAG\") | .id" | head -1
   else
-    echo "$resp" | grep -oE '"id":[0-9]+' | head -1 | cut -d: -f2
+    echo "⚠️ 无 jq：无法按 tag 精确定位 release，跳过删旧（grep-first 会误删别的 release）。装 jq（scoop/choco install jq）再跑可清旧。" >&2
   fi
 }
 
