@@ -2,6 +2,20 @@
 
 桥（hotify-bridge）的 notable 变化。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/)。
 
+## [v1.1.4] — 2026-07-27
+
+### Fixed
+- **#3 重装 Gotify → 水位 stale 永久静默丢**（用户真机触发：降级 gotify 后"桥收得到但打不到锁屏"）。改用 **id 倒退检测**（与 URL 无关——重装 gotify 时 URL 通常不变，原"按 url 持久化水位"方案检测不到）：`forward` 运行中自愈（mid<水位 → 重置水位让本条通过，不重启桥/不手动删文件）；`initLastID` 启动拉 `recentMessages(1)` 对比落盘水位检测倒退（重启场景）。不回放历史（同 #1：宁可漏断档绝不重放刷屏）。加 2 测试。
+- **gitee-upload.sh 无 jq 时误删风险**：无 jq 不再 grep-first 删 release（返空跳过，防误删别的 tag 的 release）。
+
+### Changed
+- 加 `dualpush.md`（双推方案 + 镜像构建方法，维护者参考）。
+
+### 已知限制（缓修，见 [bug.md](./bug.md)）
+- **#4** push 失败 → 消息永久丢（待做 pending 推送队列；Push Kit notifyId 幂等，缓修不欠债）。
+
+---
+
 ## [v1.1.3] — 2026-07-27
 
 ### Fixed

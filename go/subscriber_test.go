@@ -214,3 +214,55 @@ func TestBackfillGuardZeroWatermark(t *testing.T) {
 	}
 	t.Logf("✓ 水位=0 兜底：lastMsgID→%d，未重放任何消息（pushCount=0）", lastMsgID.Load())
 }
+
+// TestForwardDetectsIDRollback — ★ bug.md #3 修法验证（运行中自愈）：水位 300（旧 Gotify 实例残留），
+// Gotify 重装清库后 /stream 推来 id=5（< 水位）→ forward 必须检测到 id 倒退、重置水位、正常转发，
+// 而不是被 mid<=cur 去重吞掉 → 静默丢。注册假设备 + 计数云函数验真推送了。
+// 【关键】URL 全程不变——证明修法不依赖 url 作实例标识（用户点破的原 url 方案失效场景）。
+func TestForwardDetectsIDRollback(t *testing.T) {
+	resetWMState()
+	var pushCount int32
+	cfMock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&pushCount, 1)
+		_, _ = w.Write([]byte(`{"code":"80000000"}`))
+	}))
+	t.Cleanup(cfMock.Close)
+	saveTokens(map[string]string{"dev1": "fake-push-token"}) // 注册一台设备，否则无设备跳过推送测不出
+	cfgMu.Lock()
+	cfg = Config{CloudFunctionURLs: []string{cfMock.URL}}
+	cfgMu.Unlock()
+	lastMsgID.Store(300) // 旧 Gotify 实例残留水位
+
+	forward(GotifyMessage{ID: 5, Date: "2026-07-07T13:33:16.6428496+08:00", Title: "重装后新消息"}, "实时")
+
+	if lastMsgID.Load() != 5 {
+		t.Fatalf("id 倒退应重置水位并转发 id=5，实际 lastMsgID=%d（被去重吞了？bug #3 未修）", lastMsgID.Load())
+	}
+	if n := atomic.LoadInt32(&pushCount); n != 1 {
+		t.Fatalf("应推送 1 次，实际 %d 次（id 倒退的消息没转发——bug #3 静默丢未修）", n)
+	}
+	t.Logf("✓ id 倒退运行中自愈：水位 300→%d，id=5 正常转发（pushCount=1，URL 不变也生效）", lastMsgID.Load())
+}
+
+// TestInitLastIDDetectsRollback — ★ bug.md #3 启动检测：落盘水位 500（旧实例），Gotify 当前最新 id=10
+// （重装清库后）→ initLastID 检测到 落盘 > 当前 → 重置到 10（不续传 500、不回放历史）。
+func TestInitLastIDDetectsRollback(t *testing.T) {
+	resetWMState()
+	saveLastMsgID(500) // 旧实例落盘水位
+	msgs := []GotifyMessage{{ID: 10, Date: "2026-07-07T13:33:16.6428496+08:00", Title: "重装后最新"}}
+	mock := newMockGotify(t, msgs) // Gotify 当前最新 id=10
+	cfgMu.Lock()
+	cfg = Config{GotifyURL: mock.server.URL, GotifyToken: "t"}
+	cfgMu.Unlock()
+	lastMsgID.Store(0)
+
+	initLastID()
+
+	if lastMsgID.Load() != 10 {
+		t.Fatalf("落盘 500 > Gotify 当前 10 应重置到 10，实际 lastMsgID=%d", lastMsgID.Load())
+	}
+	if got := loadLastMsgID(); got != 10 {
+		t.Fatalf("重置后 last_msg_id 落盘应为 10，实际=%d", got)
+	}
+	t.Logf("✓ 启动检测 id 倒退：落盘 500 vs Gotify 当前 10 → 重置水位→%d（落盘同步，不续传旧 500）", lastMsgID.Load())
+}

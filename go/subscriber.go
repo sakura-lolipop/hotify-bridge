@@ -130,22 +130,54 @@ func recentMessages(limit int) []GotifyMessage {
 
 // initLastID — 设高水位（不回放历史）：优先落盘值（重启续传），没有再取最新 id。
 // 落盘值优先 = 重启后从上次水位续传，只补真漏的；首次启动没落盘值才取最新。
+// ★ id 倒退检测（bug.md #3 修法，2026-07-27）：读落盘水位时同时拉一次 Gotify 当前最新 id，
+//   若 落盘水位 > Gotify 当前最大 = Gotify DB 被重建/换实例（重装清库 id 从小重来；URL 不变也触发，
+//   故不用 url 作实例标识）→ 重置水位到当前最大，只推之后新消息（不回放）。
+//   代价：每次 initLastID 多一次 GET /message（仅启动 + 配置变更时，不频繁，可接受）。
 func initLastID() {
-	if persisted := loadLastMsgID(); persisted > 0 {
+	persisted := loadLastMsgID()
+	msgs := recentMessages(1)
+	if len(msgs) == 0 {
+		// Gotify 不可达 / 无消息：有落盘水位就续传（重启不回放），没有留 0（backfill 零水位 guard 兜底）。
+		if persisted > 0 {
+			lastMsgID.Store(persisted)
+			log.Printf("[Gotify] 从落盘水位 id=%d 续传（Gotify 暂不可达/无消息，不回放历史）", persisted)
+		}
+		return
+	}
+	curMax := int64(msgs[0].ID)
+	if persisted > 0 && curMax < persisted {
+		// 落盘水位 > Gotify 当前最大 = DB 重建/换实例 → 重置到当前最大（不回放历史）
+		lastMsgID.Store(curMax)
+		saveLastMsgID(curMax)
+		log.Printf("[Gotify] ⚠️ id 倒退（落盘水位 %d > Gotify 当前最大 %d），判定 Gotify 重装/换实例，重置水位→%d（不回放历史）", persisted, curMax, curMax)
+		return
+	}
+	if persisted > 0 {
 		lastMsgID.Store(persisted)
 		log.Printf("[Gotify] 从落盘水位 id=%d 续传（重启不回放历史）", persisted)
 		return
 	}
-	msgs := recentMessages(1)
-	if len(msgs) > 0 {
-		lastMsgID.Store(int64(msgs[0].ID))
-		log.Printf("[Gotify] 从最新消息（id=%d）开始，只转发之后的新消息，历史不补推", msgs[0].ID)
-	}
+	lastMsgID.Store(curMax)
+	log.Printf("[Gotify] 从最新消息（id=%d）开始，只转发之后的新消息，历史不补推", curMax)
 }
 
 // forward — 转发单条，按 id 去重（高水位 CAS，hazard 10）。/stream 与回补共用 → 天然不重不漏。
 func forward(msg GotifyMessage, tag string) {
 	mid := int64(msg.ID)
+	// ★ id 倒退检测（bug.md #3 修法，2026-07-27）：Gotify 消息 id 正常单调递增、永不倒退。
+	//   一旦 mid < 当前水位 = Gotify DB 被重建/换实例（重装 gotify 清库 → id 从小重新开始）。
+	//   【关键】URL 不变也触发——用户重装 gotify 多半域名/IP 没变，原"按 url 持久化水位"方案
+	//   在 url 不变时检测不到，故改用 id 倒退这个与 url 无关的信号。
+	//   处理：把水位重置到 mid-1（让本条 mid 在下面 CAS 通过、正常转发），不回放 mid 之前更老的
+	//   （宁可漏断档、绝不重放刷屏——同 backfill 零水位兜底语义；reset 到 mid-1 即便 =0 也安全，
+	//   backfill 零水位 guard 会兜）。运行中自愈，不依赖重启桥 / 不依赖 sig 变化。
+	//   单 goroutine 调用（subscribeGotify 顺序处理 backfill+ReadMessage），Store 无并发风险。
+	if cur := lastMsgID.Load(); mid < cur {
+		lastMsgID.Store(mid - 1)
+		saveLastMsgID(mid - 1)
+		log.Printf("[Gotify] ⚠️ id 倒退（水位 %d > 本条 %d），判定 Gotify 重装/换实例，重置水位→%d（不回放历史）", cur, mid, mid-1)
+	}
 	for {
 		cur := lastMsgID.Load()
 		if mid <= cur {
