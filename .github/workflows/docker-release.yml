@@ -2,7 +2,7 @@ name: Docker Build & Release
 
 # hotify-bridge 镜像 release CI：多架构（amd64+arm64）推 GHCR（海外）+ 阿里云 ACR（国内）。
 # 两个独立 job 并行：GHCR / ACR 各自构建+推 → ACR 挂了不牵连 GHCR。
-# 打 tag(v*) → 两边都推；workflow_dispatch → GHCR 只构建不推、ACR 推（可手动触发补推/测试 ACR）。
+# 打 tag(v*) → 两边都推；workflow_dispatch → 两边都只构建不推（纯烟测；发版打 tag，免污染 :latest）。
 # ⚠️ step/job 级 if 不能用 secrets.*（GitHub 解析报错 Unrecognized named-value: 'secrets'，实测踩过）。
 #    所以不靠 secrets 做条件；ACR 凭证不对时 ACR job 自己红，GHCR job 不受影响。
 permissions:
@@ -78,7 +78,7 @@ jobs:
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: true   # tag + dispatch 都推（dispatch 可手动触发测试/补推 ACR）
+          push: ${{ github.event_name == 'push' }}   # 仅 tag push 推（dispatch 只构建不推，免污染国内 :latest；与 GHCR job 对齐）
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha

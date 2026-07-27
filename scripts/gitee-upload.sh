@@ -56,11 +56,17 @@ echo "新 release id=$RID"
 [ -n "$RID" ] || { echo "❌ 建 release 多次失败（Gitee 抽风）；过会儿重跑本脚本"; exit 1; }
 
 echo "=== 传 5 个二进制（国内直连）==="
+fails=0
 for f in gotify-bridge-linux-amd64 gotify-bridge-linux-arm64 gotify-bridge-windows-amd64.exe gotify-bridge-darwin-amd64 gotify-bridge-darwin-arm64; do
   printf '  → %-36s ' "$f"
-  curl -fsSL --max-time 180 --retry 3 --retry-delay 5 -X POST "$API/releases/$RID/attach_files" \
-    -F "access_token=$TOKEN" -F "file=@go/dist/$f" -o /dev/null -w 'http %{http_code}\n' 2>/dev/null || echo "❌ 失败"
+  if curl -fsSL --max-time 180 --retry 3 --retry-delay 5 -X POST "$API/releases/$RID/attach_files" \
+    -F "access_token=$TOKEN" -F "file=@go/dist/$f" -o /dev/null -w 'http %{http_code}\n' 2>/dev/null; then :
+  else echo "❌ 失败"; fails=$((fails+1)); fi
 done
 
 echo ""
+if [ "$fails" -gt 0 ]; then
+  echo "❌ $TAG：$fails 个二进制传失败，release 不完整（重跑本脚本会删旧重建补全）"
+  exit 1
+fi
 echo "✅ $TAG 传完：https://gitee.com/$OWNER/$REPO/releases/tag/$TAG"

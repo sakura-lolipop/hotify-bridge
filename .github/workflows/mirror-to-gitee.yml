@@ -21,14 +21,21 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0   # 全历史，tag 才推得全
-      - name: Push to Gitee
+      - name: Push main to Gitee（仅 main 分支 push / dispatch 触发；tag 触发跳过——HEAD 是 tag commit 不是 main tip）
+        if: github.ref == 'refs/heads/main'
         env:
           GITEE_USER: ${{ secrets.GITEE_USER }}
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
         run: |
           set -e
           REMOTE="https://${GITEE_USER}:${GITEE_TOKEN}@gitee.com/sakura-lolipop/hotify-bridge.git"
-          # main 同步（force：以 GitHub 为准，覆盖 gitee 任何分叉）
           git push --force "$REMOTE" HEAD:main
-          # 全部 tag 同步
+      - name: Push tags to Gitee（仅 tag push 触发；不在 tag 上强推 main，免回退 Gitee main）
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GITEE_USER: ${{ secrets.GITEE_USER }}
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          set -e
+          REMOTE="https://${GITEE_USER}:${GITEE_TOKEN}@gitee.com/sakura-lolipop/hotify-bridge.git"
           git push --force "$REMOTE" --tags
