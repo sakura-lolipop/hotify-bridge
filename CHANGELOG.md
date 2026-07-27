@@ -2,6 +2,20 @@
 
 桥（hotify-bridge）的 notable 变化。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/)。
 
+## [v1.1.3] — 2026-07-27
+
+### Fixed
+**对抗审查一轮修复**（按 coop.md 纪律拆 CP、每 CP 派子 agent 对抗验，全绿）：
+- **CP-infra**：docker-release ACR `push:true`→event 对齐（dispatch 不再污染国内 `:latest`，GHCR/ACR 对称）；mirror-to-gitee 拆 main/tag 两条件步（tag 触发不再强推 HEAD:main 回退 Gitee main）；gitee-upload.sh attach 失败硬退出（不再 5 飞仍报 ✅ 静默成功）。
+- **CP-race**：加 `tokensMu`/`subStatMu`，token/subscribe_status 的 load→改→save + 死 token 清理 全事务化（防并发互覆盖丢设备 token——推送期间 App 注册新设备，清理会把新 token 覆盖丢失）；first-set-wins 的 check+write 合进一个 `cfgMu.Lock`（防 TOCTOU 并发抢首注击穿"防改后端"安全模型）。
+- **CP-misc**：HTTP 5xx+429 归重试（原只 502→云函数冷启动/限流弃推，现重试）；/register 加 `MaxBytesReader` 防 huge POST OOM；Dockerfile `ARG TARGETOS=linux TARGETARCH=amd64` 默认值（本地非 buildx `docker build` 成立）；install.sh env 名兼容 docker-compose（`GOTIFY_CLIENT_TOKEN` 优先、`HOTIFY_TOKEN` 兜底）+ token 静默输入（`read -srp`）。
+
+### 已知限制（缓修，见 [bug.md](./bug.md)）
+- **#4** push 失败 → 消息永久丢（待做 pending 推送队列；Push Kit notifyId 幂等，缓修不欠债）。
+- **#3** 换 Gotify 实例 → 水位 stale 永久静默丢（边缘，迁移实例才触发）。
+
+---
+
 ## [v1.1.2] — 2026-07-27
 
 ### Fixed

@@ -13,7 +13,7 @@
 # ── builder：原生跑，交叉编译目标架构 ──
 FROM --platform=$BUILDPLATFORM golang:1.22-alpine AS builder
 # buildx 自动注入 TARGETOS / TARGETARCH（声明后即可用）
-ARG TARGETOS TARGETARCH
+ARG TARGETOS=linux TARGETARCH=amd64   # 默认值：本地非 buildx 的 docker build 也成立（buildx 自动覆盖）
 WORKDIR /src
 # 只 COPY go/ 源码（go.mod / go.sum / *.go）；.dockerignore 已挡掉 go/dist、go/bridge_config.yaml、*.exe
 COPY go/ ./

@@ -72,6 +72,7 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]any{"ok": false})
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 65536) // 防 huge POST OOM（/register payload 极小，64KB 够；/register 公网暴露）
 	var payload map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false})

@@ -17,7 +17,7 @@ import (
 const (
 	notifyCategory    = "SUBSCRIPTION" // 通知类目，须与已开通自分类权益一致
 	testMessage       = false          // 有自分类权益→False（服务/通讯类无频控）
-	pushRetryLimit    = 3              // 502/超时重试次数（同 notifyId 幂等，Push Kit 原生覆盖防重）
+	pushRetryLimit    = 3              // 5xx+429/超时重试次数（同 notifyId 幂等，Push Kit 原生覆盖防重）
 	pushRetryInterval = 1 * time.Second // 固定间隔（量小 YAGNI，不指数退避）
 )
 
@@ -31,8 +31,8 @@ type pushStatus int
 const (
 	statusDelivered   pushStatus = iota // 80000000
 	statusDead                          // 80100000/80300007
-	statusSystemError                   // 其他 code / HTTP 5xx/401/400（保留 token）
-	statusRetry                         // 502 / 网络异常（重试）
+	statusSystemError                   // 其他 code / HTTP 401/400/4xx（保留 token；5xx+429 归 retry）
+	statusRetry                         // 5xx+429 / 网络异常（重试）
 )
 
 // ──────────────────────────── Push Kit notification / body 结构（★ 多 hazard 落点）────────────────────────────
@@ -88,12 +88,12 @@ func postToPushService(url, cfToken string, body *PushRequestBody) (pushStatus, 
 
 	if resp.StatusCode != http.StatusOK {
 		snippet := readSnippet(resp.Body, 160)
-		switch resp.StatusCode {
-		case 502:
-			return statusRetry, "", "HTTP 502 " + snippet // Push Kit HTTP 错/超时 → 重试
-		case 401:
+		switch {
+		case resp.StatusCode >= 500 || resp.StatusCode == 429:
+			return statusRetry, "", fmt.Sprintf("HTTP %d %s（服务端临时故障/限流，重试）", resp.StatusCode, snippet)
+		case resp.StatusCode == 401:
 			return statusSystemError, "", "HTTP 401 unauthorized（cloud_function_token 配错？）" + snippet
-		case 400:
+		case resp.StatusCode == 400:
 			return statusSystemError, "", "HTTP 400 bad request " + snippet
 		default:
 			return statusSystemError, "", fmt.Sprintf("HTTP %d %s", resp.StatusCode, snippet)

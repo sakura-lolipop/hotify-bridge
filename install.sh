@@ -6,7 +6,8 @@
 #   交互（推荐）：
 #     curl -fsSL https://gitee.com/sakura-lolipop/hotify-bridge/raw/main/install.sh -o install.sh && bash install.sh
 #   非交互（CI / 脚本调）：
-#     HOTIFY_TOKEN=xxx HOTIFY_GOTIFY_URL=https://your.gotify:port bash install.sh
+#     GOTIFY_CLIENT_TOKEN=xxx GOTIFY_HTTP_URL=https://your.gotify:port bash install.sh
+#     （HOTIFY_TOKEN / HOTIFY_GOTIFY_URL 老名字也认，向后兼容；跟 docker-compose 的 env 名对齐）
 #
 # 国内走阿里云 ACR（ghcr.io 被墙）。Gotify 寻址 / NAS / HTTPS 见 docker.md。
 set -e
@@ -25,15 +26,15 @@ fi
 echo "═════════════════ hotify-bridge 一键安装 ═════════════════"
 
 # ── 收集配置：env 优先，否则交互问；非 tty 又没 env → 报错（curl|bash 那种管道拿不到输入）──
-TOKEN="${HOTIFY_TOKEN:-}"
-GURL="${HOTIFY_GOTIFY_URL:-}"
+TOKEN="${GOTIFY_CLIENT_TOKEN:-${HOTIFY_TOKEN:-}}"
+GURL="${GOTIFY_HTTP_URL:-${HOTIFY_GOTIFY_URL:-}}"
 PORT="${HOTIFY_PORT:-$PORT_DEFAULT}"
 
 if [ -z "$TOKEN" ]; then
   if [ -t 0 ]; then
-    read -rp "Gotify CLIENT token（必填；Gotify WebUI → CLIENTS → 建 Client → 复制 Token）: " TOKEN
+    read -srp "Gotify CLIENT token（必填；Gotify WebUI → CLIENTS → 建 Client → 复制 Token）: " TOKEN; echo
   else
-    echo "❌ 非交互模式需 HOTIFY_TOKEN 环境变量；或直接 bash install.sh 进交互。" >&2
+    echo "❌ 非交互模式需 GOTIFY_CLIENT_TOKEN（或老名字 HOTIFY_TOKEN）环境变量；或直接 bash install.sh 进交互。" >&2
     exit 1
   fi
 fi
