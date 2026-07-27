@@ -21,5 +21,5 @@
 - **发版 = 打 `v*` tag**：触发 `.github/workflows/{go-release,release,docker-release}.yml`。**Gitee 二进制不在 CI**（境外传不动）——手动 `scripts/gitee-upload.sh`。
 - **国内分发铁律**：终端用户在国内（GFW），GitHub 系全墙。文档→Gitee，镜像→ACR，别依赖 ghcr/GitHub Releases/raw。运行时资源 fetch（`cloud_function_urls.txt`）：**Gitee raw 首选 → ghproxy → raw 兜底 + 重试**（见 `autodetect.go` `cfTxtSources`；纯 ghproxy/raw 对国内不稳，PandaSoos 踩过）。
 - **README 两版同步**：改 `README.md`（小白）要同步 `README_FULL.md`（详细），别让两份漂移。
-- **专项文档**：`docker.md`（Docker 部署）、`gitee.md`（Gitee 镜像）、`BRIDGE.md`（运行手册深入）。各自独立维护。
+- **专项文档**：`docker.md`（Docker 部署）、`gitee.md`（Gitee 镜像）、`dualpush.md`（双推方案 + 镜像构建，维护者参考）、`BRIDGE.md`（运行手册深入）。各自独立维护。
 - **机密**：`bridge_config.yaml` / `push_tokens.json` / `private.md` / 任何令牌**绝不入库**（`.gitignore` 已挡；提交前扫一眼 `git status`）。
