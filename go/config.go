@@ -71,9 +71,25 @@ func loadBridgeConfig(path string) map[string]any {
 		return out
 	}
 	def := cfgDefaults()
+	var cfContKey string // cloud_function_urls 续行模式：key 空值后，缩进行的 URL 自动累积
 	for _, line := range strings.Split(string(data), "\n") {
 		stripped := strings.TrimSpace(line)
-		if stripped == "" || strings.HasPrefix(stripped, "#") || !strings.Contains(line, ":") {
+		if stripped == "" || strings.HasPrefix(stripped, "#") {
+			continue
+		}
+		// 续行模式：缩进行（前导空格/Tab）→ cloud_function_urls 的 URL（不用 -/引号/[]）
+		if cfContKey != "" && (line[0] == ' ' || line[0] == '\t') {
+			url := stripped
+			if len(url) >= 2 && (url[0] == '"' || url[0] == '\'') && url[0] == url[len(url)-1] {
+				url = url[1 : len(url)-1]
+			}
+			if url != "" {
+				out[cfContKey] = appendCFURLs(out[cfContKey], url)
+			}
+			continue
+		}
+		cfContKey = "" // 非缩进 → 结束续行模式
+		if !strings.Contains(line, ":") {
 			continue
 		}
 		key, val, _ := strings.Cut(line, ":") // 首冒号分割（对齐 Python partition(":")）
@@ -85,28 +101,46 @@ func loadBridgeConfig(path string) map[string]any {
 			val = val[1 : len(val)-1]
 		}
 		switch {
+		case isListDefaultKey(key, def):
+			// cloud_function_urls：同行值（url / ["a","b"]）或空值+缩进续行
+			if val == "" {
+				cfContKey = key // 空值 → 下面缩进行的 URL 自动累积
+				if _, exists := out[key]; !exists {
+					out[key] = []string{}
+				}
+			} else {
+				out[key] = appendCFURLs(out[key], val)
+			}
 		case strings.HasPrefix(val, "[") && strings.HasSuffix(val, "]"):
-			// list 字面量 → json.Unmarshal；失败保留原字符串（对齐 Python json.loads 失败 pass）
+			// list 字面量（非 cloud_function_urls 的其他 key）→ json.Unmarshal
 			var arr []string
 			if json.Unmarshal([]byte(val), &arr) == nil {
 				out[key] = arr
 			} else {
 				out[key] = val
 			}
-		case isListDefaultKey(key, def) && val != "":
-			// 默认是 list 但值是普通字符串 → 宽松归一化（剥 brackets/引号/空白 → 单元素 list）
-			// 处理 malformed 如 `"url"]`（缺 [）；多 URL 须用 ["a","b"]（走上面的 json 路径）
-			trimmed := strings.Trim(val, "[]\"' \t")
-			if trimmed != "" {
-				out[key] = []string{trimmed}
-			} else {
-				out[key] = []string{}
-			}
 		default:
 			out[key] = val
 		}
 	}
 	return out
+}
+
+// appendCFURLs — cloud_function_urls 多行累积：已有 list + 新行 → append。
+// 支持 ["a","b"] JSON 数组 / 单 URL（剥 brackets/引号）/ 空值（保留已有）。多行 cloud_function_urls: url 自动累积。
+func appendCFURLs(existing any, val string) []string {
+	list, _ := existing.([]string)
+	if strings.HasPrefix(val, "[") && strings.HasSuffix(val, "]") {
+		var arr []string
+		if json.Unmarshal([]byte(val), &arr) == nil {
+			return append(list, arr...)
+		}
+		fmt.Printf("[配置] ⚠️ cloud_function_urls 值形似 JSON 数组但解析失败，按原样当 URL 保留：%s\n", val)
+	}
+	if trimmed := strings.Trim(val, "[]\"' \t"); trimmed != "" {
+		return append(list, trimmed)
+	}
+	return list // 空值 → 保留已有（首次 nil → 后续 append）
 }
 
 // isListDefaultKey — 该 key 在 defaults 里是 list 类型（仅 cloud_function_urls）。
@@ -197,10 +231,9 @@ func isAllDigit(s string) bool {
 // bridge_config.yaml 不存在 → 生成带注释的一份（部署者直接改）。注释内嵌于此，无 example 模板文件。
 func seedConfigFile() {
 	d := cfgDefaults()
-	cfURLs := "[]" // 空列表渲染为 []（对齐 Python str([])）
 	content := fmt.Sprintf(`# bridge_config.yaml — Hotify 桥配置（首次自动生成，按需修改）
 # 格式宽松：每行 `+"`键: 值`"+`，值 = 冒号后整段（反斜杠/冒号原样，引号可选）。# 开头是注释。
-# 必填：gotify_token + cloud_function_urls。其余有默认值或自动探测。详见 BRIDGE.md / repourl.md
+# 必填：gotify_token。cloud_function_urls 留空=自动管理（fetch txt），手动填=override。
 
 # Gotify 地址（App 视角）。完整地址 https://你的域名:端口（远程/域名）；或只填端口→同机明文。App 上报会覆盖。
 gotify_url: %s
@@ -224,15 +257,14 @@ tls_key_file: %s
 # 订阅类字样标注开关。true（默认）= 转发时给标题加"订阅:"前缀（如"订阅:短信验证码"）；false = 不加。
 subscribe_label: %s
 
-# 推送服务入口（桥不直连 Push Kit，HTTP POST 推送服务；private 锁在服务里）。
-# 留空 = 自动管理：cache-first 启动（热启动用本地 cache 秒起 / 冷启动 fetch cloud_function_urls.txt）+ 后台每 h 刷新。
-#   云函数变动只改仓库 cloud_function_urls.txt，桥常驻最多 1h 跟上、免重启。
-# 填了 = 手动 override（不走自动管理，改 URL 改这里；JSON 数组可多个 fallback）。
-cloud_function_urls: %s
+# 推送服务入口（桥不直连 Push Kit，HTTP POST 推送服务）。
+# 仅供测试用，非特殊情况无需配置——留空走自动管理（cache-first + 后台每 h 刷新 cloud_function_urls.txt）。
+# 需要手动 override 时：取消下面注释，每行一个 url（不用 - 不用引号 不用 []）。
+# cloud_function_urls: https://你的推送服务域名/api/push
 
 # 推送服务 AUTH_TOKEN（防爬虫，非防推送）。默认 hotifypushkit（managed）；自托管填你服务侧配的；留空=服务侧没开鉴权。
 cloud_function_token: %s
-`, d.GotifyURL, d.GotifyToken, d.GotifyURLLocal, d.GotifyConfigPath, d.TLSCertFile, d.TLSKeyFile, d.SubscribeLabel, cfURLs, d.CloudFunctionToken)
+`, d.GotifyURL, d.GotifyToken, d.GotifyURLLocal, d.GotifyConfigPath, d.TLSCertFile, d.TLSKeyFile, d.SubscribeLabel, d.CloudFunctionToken)
 	if err := os.WriteFile(bridgeConfigFile, []byte(content), 0644); err != nil {
 		fmt.Printf("[配置] 生成 %s 失败：%v\n", bridgeConfigFile, err)
 		return

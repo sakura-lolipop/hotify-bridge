@@ -4,6 +4,17 @@
 
 ---
 
+## ✅ #6 hotify-bridge.exe 文件损坏 → 无报错闪退（已解）
+
+- **来源**：用户反馈（2026-07-29）——VPS 上双击/PowerShell 跑 bridge 直接退出，**零输出**。
+- **症状**：VPS 上 `.\hotify-bridge.exe` → 立即返回提示符，**无 stdout/stderr**（无 panic、无日志、无"[配置]..."）。本地同一 binary 正常。
+- **根因**：**binary 文件损坏**（传输/复制过程中字节损坏）。Go binary 损坏后 Windows 加载器直接终止进程——**不报错、不打印、不 panic**（Go runtime 还没初始化就挂），所以零输出。
+- **修法**：**重新复制 binary**（从源头重拷 hotify-bridge.exe 到 VPS）→ 正常启动。
+- **状态**：✅ 已解。
+- **教训**：Go binary 在 VPS 上"零输出闪退" = 先怀疑文件损坏（不是代码 bug）。排障：对比文件大小 / 重新复制 / 本地跑同一 binary 确认。
+
+---
+
 ## 🔧 #5 CF1 配额耗尽 → 消息漏发/迟发（fallback 没分层；已修待发版）
 
 - **来源**：设计复核（2026-07-29）——追查桥 fallback 路径时发现。
