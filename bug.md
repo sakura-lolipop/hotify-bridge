@@ -4,6 +4,24 @@
 
 ---
 
+## 🔧 #5 CF1 配额耗尽 → 消息漏发/迟发（fallback 没分层；已修待发版）
+
+- **来源**：设计复核（2026-07-29）——追查桥 fallback 路径时发现。
+- **症状**：多 CF 配置下，CF1 配额耗尽（或部署挂 / 返 402 / 错误页）时：
+  - CF1 返 5xx/429/挂起 → 每条消息都得先给 CF1 烧 3 次重试（~2-3s，hang 最坏 ~45s）才 fallback 到 CF2 = **持续迟发**；
+  - CF1 返 4xx（402/403）或 200+错误页 → 旧逻辑把 4xx 和"200+Push Kit 错码"都归进 `statusSystemError` 终态、**不 fallback** → CF2 根本不被试 → **该条漏发**（且之后每条都漏，直到 CF1 自愈）。
+- **根因**：`postToPushService` 把"CF 平台层故障（非 200）"和"Push Kit 语义拒（200 + 非 success 码）"混进同一个 `statusSystemError` 终态桶 → 前者本该 fallback 却没 fallback。CF 是 Push Kit 的代理，HTTP 状态码已区分了两层，旧代码把这信号扔了。
+- **修法（2026-07-29，已实现）**：fallback 决策改成按**失败层**——
+  - 加 `statusCfDown`（非 200·硬挂：4xx / 200+非JSON / URL 格式错）→ 立即 fallback、不重试；
+  - `statusSystemError` 收窄为"200 + 非 success 码 / 本地 body 序列化错"→ 终态不 fallback（CF2 同果，省 consumption）；
+  - 5xx/429/超时/网络 仍 `statusRetry`（重试 ≤3 再 fallback）。
+  - 一条规则：**HTTP 200 = Push Kit 已应答 → 停（不 fallback）；HTTP 非 200 = CF 挂 → fallback**。零新状态（无熔断 / cooldown / health map）。
+- **测试**：`TestPushNoFallbackOnPushKitError`（200+80300002 → URL2 零调用，省消费）+ `TestPushFallbackOnCfDown`（402 → 立即 fallback，callCount=2 无迟发税）+ `TestPushFallbackOnNonJSON200`（200+HTML → fallback）。`go test` 全过。
+- **状态**：🔧 已修（本地，测试过）；⏳ 待发版（下次 tag 带上）。文档已同步 `docs/pushkit-delivery.md` §9。
+- **注**：单 CF 配置不触发（无第二个 URL 可 fallback）；CF1 配额若返 5xx/429 仍重试 3 次（迟发税残留，量小 YAGNI 不加熔断）。
+
+---
+
 ## 🐛 #4 push 失败 → 消息永久丢（缓修，待做推送可靠性队列）
 
 - **来源**：对抗审查（Go agent，2026-07-27）。

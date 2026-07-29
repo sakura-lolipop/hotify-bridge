@@ -25,14 +25,17 @@ const (
 // 鉴权 802x/权益 80300002/超长 80300008/频控/系统错 81xxxxx 都跟 token 死活无关——误删丢好 token。
 var deadTokenCodes = map[string]bool{"80100000": true, "80300007": true}
 
-// pushStatus — 推送结果分类（对齐 Python _post_to_push_service 返回的 status 字符串）。
+// pushStatus — 推送结果分类。fallback 决策由「失败发生在哪一层」定（CF 是 Push Kit 的代理，两层）：
+//   - HTTP 非 200 = CF 平台层故障（配额耗尽/部署挂/4xx/超时/错误页）→ 这个 CF 就是病灶 → fallback 下一个；
+//   - HTTP 200     = CF 健康、已把 Push Kit 应答递回 → CF2 会得到一模一样的应答 → 终态不 fallback（省 consumption）。
 type pushStatus int
 
 const (
-	statusDelivered   pushStatus = iota // 80000000
-	statusDead                          // 80100000/80300007
-	statusSystemError                   // 其他 code / HTTP 401/400/4xx（保留 token；5xx+429 归 retry）
-	statusRetry                         // 5xx+429 / 网络异常（重试）
+	statusDelivered   pushStatus = iota // 200 + 80000000
+	statusDead                          // 200 + 死-token 码（80100000/80300007）
+	statusSystemError                   // 终态·不 fallback：200+其他码（Push Kit 拒：超长/权益…）/ 本地 body 序列化错（CF2 同果，省消费）
+	statusRetry                         // 非200·瞬态：5xx/429/超时/网络 → 重试 ≤3 再 fallback
+	statusCfDown                        // 非200·硬挂：4xx / 200+非JSON / URL 格式错 → 立即 fallback、不重试
 )
 
 // ──────────────────────────── Push Kit notification / body 结构（★ 多 hazard 落点）────────────────────────────
@@ -72,8 +75,8 @@ func postToPushService(url, cfToken string, body *PushRequestBody) (pushStatus, 
 	}
 	req, err := http.NewRequestWithContext(context.Background(), "POST", url, bytes.NewReader(bodyBytes))
 	if err != nil {
-		// URL 缺 scheme 等 → SystemError 不重试（防 ValueError 窜）
-		return statusSystemError, "", "URL 格式错（检查 cloud_function_urls 带 https://）: " + err.Error()
+		// URL 缺 scheme 等 → 该 URL 本身坏（per-CF）；换下个 URL 可能就好 → CfDown fallback
+		return statusCfDown, "", "URL 格式错（检查 cloud_function_urls 带 https://）: " + err.Error()
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if cfToken != "" { // ★ hazard 4：空 token 不发 Auth（发空 "Bearer " 过不了云函数精确匹配）
@@ -92,11 +95,11 @@ func postToPushService(url, cfToken string, body *PushRequestBody) (pushStatus, 
 		case resp.StatusCode >= 500 || resp.StatusCode == 429:
 			return statusRetry, "", fmt.Sprintf("HTTP %d %s（服务端临时故障/限流，重试）", resp.StatusCode, snippet)
 		case resp.StatusCode == 401:
-			return statusSystemError, "", "HTTP 401 unauthorized（cloud_function_token 配错？）" + snippet
-		case resp.StatusCode == 400:
-			return statusSystemError, "", "HTTP 400 bad request " + snippet
+			// 401 多半 cloud_function_token 配错（全局单值，CF2 多半也 401）；但仍走 CfDown fallback 一次——部署配错窗口短暂，不为它开特例
+			return statusCfDown, "", "HTTP 401 unauthorized（cloud_function_token 配错？）" + snippet
 		default:
-			return statusSystemError, "", fmt.Sprintf("HTTP %d %s", resp.StatusCode, snippet)
+			// 4xx（400/402/403…）= CF 平台层硬挂（配额耗尽/封禁/鉴权）→ 不会 1s 自愈，不重试，立即 fallback 下个 URL
+			return statusCfDown, "", fmt.Sprintf("HTTP %d %s（CF 平台层故障，fallback）", resp.StatusCode, snippet)
 		}
 	}
 
@@ -107,7 +110,7 @@ func postToPushService(url, cfToken string, body *PushRequestBody) (pushStatus, 
 		Msg  string `json:"msg"`
 	}
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return statusSystemError, "", "HTTP 200 但 body 非 JSON：" + truncate(string(respBody), 160)
+		return statusCfDown, "", "HTTP 200 但 body 非 JSON（CF 异常/错误页，fallback）：" + truncate(string(respBody), 160)
 	}
 	code := anyToCodeStr(result.Code)
 	if code == "80000000" {
@@ -116,6 +119,7 @@ func postToPushService(url, cfToken string, body *PushRequestBody) (pushStatus, 
 	if deadTokenCodes[code] {
 		return statusDead, code, result.Msg
 	}
+	// 200 + 其他 code：CF 健康、Push Kit 拒了（超长 80300008/权益 80300002…）→ CF2 会同果 → 终态不 fallback（省 consumption）
 	return statusSystemError, code, fmt.Sprintf("code=%s msg=%s", code, result.Msg)
 }
 
@@ -135,8 +139,9 @@ func anyToCodeStr(v any) string {
 }
 
 // ──────────────────────────── 转发一条消息到所有设备（镜像 Python send_to_huawei）────────────────────────────
-// 流程（docs/pushkit-delivery.md）：① 构造 notification（clickAction.data={ts}）② 逐设备遍历 cloud_function_urls
-// fallback + 每 URL 重试 ≤3（同 notifyId 幂等）③ 全局闸门：本轮 delivered==0 则不删任何死 token（hazard 11）。
+// 流程（docs/pushkit-delivery.md §9）：① 构造 notification（clickAction.data={ts}）② 逐设备遍历 cloud_function_urls
+// fallback——按失败层决策：HTTP 200=Push Kit 已应答(CF2 同果→不 fallback 省 consumption)；非 200=CF 平台挂(→fallback)；
+// 其中 5xx/429/超时 重试 ≤3 再 fallback，4xx 立即 fallback 不重试（同 notifyId 幂等）③ 全局闸门：delivered==0 则不删死 token。
 func sendToHuawei(title, message string, priority int, extras json.RawMessage, ts string, notifyID int) {
 	_ = priority // notification 不含 priority（Push Kit 不需要；保留签名对齐 Python）
 	cfgMu.RLock()
@@ -204,7 +209,8 @@ func sendToHuawei(title, message string, priority int, extras json.RawMessage, t
 			TestMessage:  testMessage,
 		}
 
-		// 遍历 URLs（fallback）：retry 用尽才试下一个 URL；delivered/dead/system_error 终态即出。
+		// 遍历 URLs（fallback）：仅 retry 会重试同 URL；retry 用尽 / CF 平台挂(cfDown) → 试下一个 URL；
+		// delivered/dead/system_error 是终态且 CF2 同果 → 不 fallback（省 consumption）。
 		finalStatus, finalMsg := statusRetry, ""
 		for _, u := range urls {
 			attemptStatus, attemptMsg := statusRetry, ""
@@ -217,22 +223,23 @@ func sendToHuawei(title, message string, priority int, extras json.RawMessage, t
 				case statusDead:
 					log.Printf("[PushKit] ✗ %s code=%s msg=%s → 该 token 无效  (url=%s)", devID, code, msg, u)
 				case statusSystemError:
-					log.Printf("[PushKit] ⚠️ %s %s → 保留（非死-token，疑系统/参数问题）  (url=%s)", devID, msg, u)
+					log.Printf("[PushKit] ⚠️ %s %s → 保留（CF 健康/Push Kit 拒，CF2 同果，不 fallback）  (url=%s)", devID, msg, u)
+				case statusCfDown:
+					log.Printf("[PushKit] ⚡ %s %s → CF 平台层故障，fallback 下一个 URL  (url=%s)", devID, msg, u)
 				case statusRetry:
 					if attempt < pushRetryLimit {
 						log.Printf("[PushKit] ↻ %s %s → 重试 %d/%d  (url=%s)", devID, msg, attempt+1, pushRetryLimit, u)
 						time.Sleep(pushRetryInterval)
 					}
 				}
-				if st == statusDelivered || st == statusDead || st == statusSystemError {
-					break // 终态 → 出重试循环
+				if st != statusRetry {
+					break // 仅 retry 续跑；cfDown/终态都出内层（cfDown 不重试 4xx）
 				}
 			}
 			finalStatus, finalMsg = attemptStatus, attemptMsg
 			if attemptStatus == statusDelivered || attemptStatus == statusDead || attemptStatus == statusSystemError {
-				break // 终态 → 不 fallback 下一个 URL
+				break // 终态（CF2 同果）→ 不 fallback；cfDown/retry 用尽 → 落到下一个 URL
 			}
-			// retry 用尽 3 次 → 试下一个 URL（fallback）
 		}
 
 		switch finalStatus {
@@ -240,8 +247,8 @@ func sendToHuawei(title, message string, priority int, extras json.RawMessage, t
 			delivered++
 		case statusDead:
 			dead = append(dead, devID)
-		case statusRetry:
-			log.Printf("[PushKit] ✗ %s 所有 URL 重试用尽仍失败 → 保留 token（下次再推）：%s", devID, finalMsg)
+		case statusRetry, statusCfDown:
+			log.Printf("[PushKit] ✗ %s 所有 URL 都失败 → 保留 token（下次再推）：%s", devID, finalMsg)
 			// system_error 已在上面打印过
 		}
 	}

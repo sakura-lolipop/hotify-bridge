@@ -259,3 +259,63 @@ func TestPushFallback(t *testing.T) {
 	}
 	t.Logf("✓ fallback：URL1 502×3 用尽 → URL2 80000000（callCount=4）")
 }
+
+// TestPushNoFallbackOnPushKitError — ★ 省消费核心：URL1 返 200+Push Kit 错码（CF 健康、Push Kit 拒）
+// → 不 fallback URL2（CF2 会同果）。URL1 只调 1 次（终态不重试），URL2 零调用，token 保留。
+func TestPushNoFallbackOnPushKitError(t *testing.T) {
+	chdirTemp(t)
+	mock1 := newMockCloudFn(t, []mockResp{{200, "80300002"}}) // URL1：Push Kit 权益拒绝，CF 本身健康
+	mock2 := newMockCloudFn(t, []mockResp{{200, "80000000"}}) // URL2：不该被调
+	setCfg(t, []string{mock1.server.URL + "/api/push", mock2.server.URL + "/api/push"}, "tok", "false")
+	saveTokens(map[string]string{"dev1": "A"})
+
+	sendToHuawei("t", "m", 4, nil, "ts", 1)
+
+	if cc := mock2.callCount(); cc != 0 {
+		t.Fatalf("★ 省消费失败：200+Push Kit 错码不该 fallback，但 URL2 被调了 %d 次", cc)
+	}
+	if cc := mock1.callCount(); cc != 1 {
+		t.Fatalf("URL1 该调 1 次（终态不重试不 fallback），实际 %d", cc)
+	}
+	if _, ok := loadTokens()["dev1"]; !ok {
+		t.Fatal("200+Push Kit 错码（system_error）不该删 token")
+	}
+	t.Logf("✓ 省消费：URL1 返 200+80300002（Push Kit 拒）→ 不 fallback URL2（CF2 同果，零浪费）")
+}
+
+// TestPushFallbackOnCfDown — ★ CF 平台层故障：URL1 返 402（配额耗尽）→ 不重试、立即 fallback URL2。
+// 关键：4xx 不重试（不会 1s 自愈），URL1 只调 1 次（非 3 次）→ 无迟发税，总 callCount=2。
+func TestPushFallbackOnCfDown(t *testing.T) {
+	chdirTemp(t)
+	mock := newMockCloudFn(t, []mockResp{{402, ""}, {200, "80000000"}})
+	url := mock.server.URL + "/api/push" // 同一 mock 当 URL1+URL2
+	setCfg(t, []string{url, url}, "tok", "false")
+	saveTokens(map[string]string{"dev1": "A"})
+
+	sendToHuawei("t", "m", 4, nil, "ts", 1)
+
+	if cc := mock.callCount(); cc != 2 {
+		t.Fatalf("4xx fallback callCount=%d（期望 2：URL1 402×1 不重试 + URL2 80000000）", cc)
+	}
+	t.Logf("✓ CF 平台层故障：URL1 402 → 不重试立即 fallback URL2（callCount=2，无迟发税）")
+}
+
+// TestPushFallbackOnNonJSON200 — URL1 返 200 但 body 非 JSON（CF 异常/错误页）→ cfDown → fallback URL2。
+func TestPushFallbackOnNonJSON200(t *testing.T) {
+	chdirTemp(t)
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte("<html>quota exceeded error page</html>"))
+	}))
+	t.Cleanup(bad.Close)
+	mock2 := newMockCloudFn(t, []mockResp{{200, "80000000"}})
+	setCfg(t, []string{bad.URL, mock2.server.URL + "/api/push"}, "tok", "false")
+	saveTokens(map[string]string{"dev1": "A"})
+
+	sendToHuawei("t", "m", 4, nil, "ts", 1)
+
+	if cc := mock2.callCount(); cc != 1 {
+		t.Fatalf("200+非JSON 该 fallback URL2，URL2 调用 %d 次（期望 1）", cc)
+	}
+	t.Logf("✓ CF 异常：URL1 200+非JSON（错误页）→ cfDown fallback URL2")
+}
