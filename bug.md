@@ -26,10 +26,11 @@
   - 加 `statusCfDown`（非 200·硬挂：4xx / 200+非JSON / URL 格式错）→ 立即 fallback、不重试；
   - `statusSystemError` 收窄为"200 + 非 success 码 / 本地 body 序列化错"→ 终态不 fallback（CF2 同果，省 consumption）；
   - 5xx/429/超时/网络 仍 `statusRetry`（重试 ≤3 再 fallback）。
-  - 一条规则：**HTTP 200 = Push Kit 已应答 → 停（不 fallback）；HTTP 非 200 = CF 挂 → fallback**。零新状态（无熔断 / cooldown / health map）。
+  - 一条规则：**HTTP 200 = Push Kit 已应答 → 停（不 fallback）；HTTP 非 200 = CF 挂 → fallback**。零新状态（无熔断/cooldown/health map）—— ⚠️ 注：cooldown 后加（见下方 2026-08-01 翻案），非"零状态"了。
 - **测试**：`TestPushNoFallbackOnPushKitError`（200+80300002 → URL2 零调用，省消费）+ `TestPushFallbackOnCfDown`（402 → 立即 fallback，callCount=2 无迟发税）+ `TestPushFallbackOnNonJSON200`（200+HTML → fallback）。`go test` 全过。
 - **状态**：🔧 已修（本地，测试过）；⏳ 待发版（下次 tag 带上）。文档已同步 `docs/pushkit-delivery.md` §9。
-- **注**：单 CF 配置不触发（无第二个 URL 可 fallback）；CF1 配额若返 5xx/429 仍重试 3 次（迟发税残留，量小 YAGNI 不加熔断）。
+- **注**：单 CF 配置不触发（无第二个 URL 可 fallback）。
+- **2026-08-01 翻案（加 cooldown 熔断）**：原"YAGNI 不加熔断"撤回 —— 实测 VPS+Netlify fallback 架构下，VPS 持续挂时每条消息都白等 ~45s（3 次 ×15s 超时）才切 Netlify，太慢。`push.go` 加 circuit breaker：URL 连续失败 `cfFailThreshold=3` 次（每条用尽=1 次）→ cooldown **指数退避**（`cfBaseCooldown=60s` × `cfBackoffMult=3`,cap `cfMaxCooldown=900s`：1st 60/2nd 180/3rd 540/4th+ 900s；期间 `cfOnCooldown` 跳过、直接 fallback 下一个）；过期 half-open 试一条，成功 `recordCfOk` 恢复。CF 健康（200）→ `recordCfOk` 重置。go test 过（现有 fallback 测试不破）。
 
 ---
 

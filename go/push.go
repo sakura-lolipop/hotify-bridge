@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -24,6 +25,71 @@ const (
 // deadTokenCodes — 死-token 白名单（仅这两个码语义=token 无效，≈ APNs Unregistered）。
 // 鉴权 802x/权益 80300002/超长 80300008/频控/系统错 81xxxxx 都跟 token 死活无关——误删丢好 token。
 var deadTokenCodes = map[string]bool{"80100000": true, "80300007": true}
+
+// cooldown / 熔断（circuit breaker）:URL 连续失败 N 次（每条消息用尽 = 1 次）→ cooldown X 秒（期间跳过,直接 fallback 下一个）。
+// 防 VPS 持续挂时每条消息都白等 ~45s（试 3 次 ×15s 超时）才切 —— cooldown 内直接跳过,减延迟。
+// 翻 bug.md「YAGNI 不加熔断」案:VPS+Netlify fallback 架构下,无 cooldown 每条白等 45s 太慢。
+var (
+	cfMu            sync.Mutex
+	cfFailCount     = map[string]int{}
+	cfCooldownUntil = map[string]time.Time{}
+	cfBreakerCount  = map[string]int{} // URL 连续熔断次数（退避：cooldown = base × mult^count,cap max）
+)
+
+const (
+	cfFailThreshold = 3                  // 连续失败 N 次 → 触发熔断
+	cfBaseCooldown  = 60 * time.Second   // 首次熔断 cooldown（退避起点）
+	cfBackoffMult   = 3                  // 每次熔断 cooldown ×N（指数退避）
+	cfMaxCooldown   = 900 * time.Second  // 退避上限（15 分钟）
+)
+
+// cfOnCooldown — url 在 cooldown 中（跳过,直接 fallback 下一个）?过期则清（half-open 允许试一条）。
+func cfOnCooldown(url string) bool {
+	cfMu.Lock()
+	defer cfMu.Unlock()
+	until, ok := cfCooldownUntil[url]
+	if !ok {
+		return false
+	}
+	if time.Now().Before(until) {
+		return true
+	}
+	delete(cfCooldownUntil, url) // 过期清（half-open）
+	return false
+}
+
+// recordCfFail — URL 用尽（cfDown/retry 用尽 = CF 挂）→ count++; 达阈值 → 标 cooldown。
+func recordCfFail(url string) {
+	cfMu.Lock()
+	defer cfMu.Unlock()
+	cfFailCount[url]++
+	if cfFailCount[url] >= cfFailThreshold {
+		// 退避：cooldown = cfBaseCooldown × cfBackoffMult^breakerCount,cap cfMaxCooldown
+		// 1st 60s / 2nd 180s / 3rd 540s / 4th+ 900s —— 短抖动快速恢复,持续挂退避到 cap
+		n := cfBreakerCount[url]
+		d := cfBaseCooldown
+		for i := 0; i < n; i++ {
+			d *= time.Duration(cfBackoffMult)
+			if d >= cfMaxCooldown {
+				d = cfMaxCooldown
+				break
+			}
+		}
+		cfCooldownUntil[url] = time.Now().Add(d)
+		cfBreakerCount[url]++
+		log.Printf("[PushKit] 🔌 %s 连续 %d 次失败,熔断 cooldown %v（第 %d 次退避,cap %v）", url, cfFailCount[url], d, cfBreakerCount[url], cfMaxCooldown)
+		delete(cfFailCount, url) // 触发后清（cooldown 期不计）
+	}
+}
+
+// recordCfOk — URL 健康（delivered/dead/system_error = CF 200 健康）→ 重置 fail + 清 cooldown（恢复）。
+func recordCfOk(url string) {
+	cfMu.Lock()
+	defer cfMu.Unlock()
+	delete(cfFailCount, url)
+	delete(cfCooldownUntil, url)
+	delete(cfBreakerCount, url) // 恢复 → 重置退避计数
+}
 
 // pushStatus — 推送结果分类。fallback 决策由「失败发生在哪一层」定（CF 是 Push Kit 的代理，两层）：
 //   - HTTP 非 200 = CF 平台层故障（配额耗尽/部署挂/4xx/超时/错误页）→ 这个 CF 就是病灶 → fallback 下一个；
@@ -213,6 +279,10 @@ func sendToHuawei(title, message string, priority int, extras json.RawMessage, t
 		// delivered/dead/system_error 是终态且 CF2 同果 → 不 fallback（省 consumption）。
 		finalStatus, finalMsg := statusRetry, ""
 		for _, u := range urls {
+			if cfOnCooldown(u) {
+				log.Printf("[PushKit] 🧊 %s 跳过 %s（cooldown 中,直接 fallback 下一个）", devID, u)
+				continue
+			}
 			attemptStatus, attemptMsg := statusRetry, ""
 			for attempt := 1; attempt <= pushRetryLimit; attempt++ {
 				st, code, msg := postToPushService(u, cfToken, body)
@@ -238,8 +308,10 @@ func sendToHuawei(title, message string, priority int, extras json.RawMessage, t
 			}
 			finalStatus, finalMsg = attemptStatus, attemptMsg
 			if attemptStatus == statusDelivered || attemptStatus == statusDead || attemptStatus == statusSystemError {
-				break // 终态（CF2 同果）→ 不 fallback；cfDown/retry 用尽 → 落到下一个 URL
+				recordCfOk(u) // CF 健康（200）→ 重置 fail + 清 cooldown
+				break        // 终态（CF2 同果）→ 不 fallback；cfDown/retry 用尽 → 落到下一个 URL
 			}
+			recordCfFail(u) // cfDown / retry 用尽 = CF 挂 → 计 fail（达阈值熔断）
 		}
 
 		switch finalStatus {
