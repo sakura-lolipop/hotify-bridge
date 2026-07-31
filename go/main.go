@@ -42,6 +42,9 @@ func main() {
 
 	var wg sync.WaitGroup
 	wg.Add(2)
+	if !cfYamlOverride {
+		wg.Add(1) // refresh goroutine 也进 wg(#2):SIGINT 不杀在写 cache 中途留半截文件
+	}
 	go func() {
 		defer wg.Done()
 		if err := startRegisterServer(ctx); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -54,7 +57,10 @@ func main() {
 	}()
 	// cloud_function_urls 后台刷新（仅 yaml 未 override；cache-first 启动之上运行时跟上 txt 变化）
 	if !cfYamlOverride {
-		go refreshCfURLsPeriodically(ctx)
+		go func() {
+			defer wg.Done()
+			refreshCfURLsPeriodically(ctx)
+		}()
 	}
 	wg.Wait()
 }

@@ -2,7 +2,7 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -21,7 +21,7 @@ func loadTokens() map[string]string {
 	data, err := os.ReadFile(pushTokensFile)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			fmt.Printf("[tokens] 读取失败：%v\n", err)
+			log.Printf("[tokens] 读取失败：%v\n", err)
 		}
 		return map[string]string{}
 	}
@@ -41,11 +41,11 @@ func saveTokens(m map[string]string) {
 	defer fileMu.Unlock()
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
-		fmt.Printf("[tokens] 序列化失败：%v\n", err)
+		log.Printf("[tokens] 序列化失败：%v\n", err)
 		return
 	}
 	if err := os.WriteFile(pushTokensFile, data, 0644); err != nil {
-		fmt.Printf("[tokens] 写入失败：%v\n", err)
+		log.Printf("[tokens] 写入失败：%v\n", err)
 	}
 }
 
@@ -56,7 +56,7 @@ func loadSubscribeStatus() map[string]bool {
 	data, err := os.ReadFile(subscribeStatusFile)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			fmt.Printf("[subscribe] 读取失败：%v\n", err)
+			log.Printf("[subscribe] 读取失败：%v\n", err)
 		}
 		return map[string]bool{}
 	}
@@ -76,11 +76,11 @@ func saveSubscribeStatus(m map[string]bool) {
 	defer fileMu.Unlock()
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
-		fmt.Printf("[subscribe] 序列化失败：%v\n", err)
+		log.Printf("[subscribe] 序列化失败：%v\n", err)
 		return
 	}
 	if err := os.WriteFile(subscribeStatusFile, data, 0644); err != nil {
-		fmt.Printf("[subscribe] 写入失败：%v\n", err)
+		log.Printf("[subscribe] 写入失败：%v\n", err)
 	}
 }
 
@@ -104,6 +104,6 @@ func saveLastMsgID(id int64) {
 	fileMu.Lock()
 	defer fileMu.Unlock()
 	if err := os.WriteFile(lastMsgIDFile, []byte(strconv.FormatInt(id, 10)), 0644); err != nil {
-		fmt.Printf("[Gotify] last_msg_id 写入失败：%v\n", err)
+		log.Printf("[Gotify] last_msg_id 写入失败：%v\n", err)
 	}
 }

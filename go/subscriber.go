@@ -302,11 +302,8 @@ func keepSubscribed(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		base := gotifyConnectURL() // 单一真相:照 subscribeGotify 调 helper,别内联重写回退规则(#1)
 		cfgMu.RLock()
-		base := cfg.GotifyURLLocal
-		if base == "" {
-			base = cfg.GotifyURL
-		}
 		tok := cfg.GotifyToken
 		cfgMu.RUnlock()
 		sig := base + "\x00" + tok

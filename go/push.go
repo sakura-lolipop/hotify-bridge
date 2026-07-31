@@ -16,10 +16,11 @@ import (
 
 // ──────────────────────────── 推送常量（对齐 Python）────────────────────────────
 const (
-	notifyCategory    = "SUBSCRIPTION" // 通知类目，须与已开通自分类权益一致
-	testMessage       = false          // 有自分类权益→False（服务/通讯类无频控）
-	pushRetryLimit    = 3              // 5xx+429/超时重试次数（同 notifyId 幂等，Push Kit 原生覆盖防重）
-	pushRetryInterval = 1 * time.Second // 固定间隔（量小 YAGNI，不指数退避）
+	notifyCategory    = "SUBSCRIPTION"   // 通知类目，须与已开通自分类权益一致
+	testMessage       = false            // 有自分类权益→False（服务/通讯类无频控）
+	pushRetryLimit    = 3                // 5xx+429/超时重试次数（同 notifyId 幂等，Push Kit 原生覆盖防重）
+	pushRetryInterval = 1 * time.Second  // 固定间隔（量小 YAGNI，不指数退避）
+	pushHTTPTimeout   = 15 * time.Second // push POST 超时（云函数内部 10s 调 Push Kit + 余量）#3 命名常量
 )
 
 // deadTokenCodes — 死-token 白名单（仅这两个码语义=token 无效，≈ APNs Unregistered）。
@@ -148,7 +149,7 @@ func postToPushService(url, cfToken string, body *PushRequestBody) (pushStatus, 
 	if cfToken != "" { // ★ hazard 4：空 token 不发 Auth（发空 "Bearer " 过不了云函数精确匹配）
 		req.Header.Set("Authorization", "Bearer "+cfToken)
 	}
-	client := &http.Client{Timeout: 15 * time.Second} // 15s：云函数内部 10s 调 Push Kit + 余量
+	client := &http.Client{Timeout: pushHTTPTimeout} // #3 命名常量
 	resp, err := client.Do(req)
 	if err != nil {
 		return statusRetry, "", fmt.Sprintf("%T: %v", err, err) // 网络异常/超时 → 重试
@@ -235,7 +236,7 @@ func sendToHuawei(title, message string, priority int, extras json.RawMessage, t
 		}
 	}
 
-	notifyIDInt := notifyID // 0 → omitempty 省略；Gotify msgId 非 0 → 出现（重试同 id 幂等）
+	// notifyID（参数）直接用,0 → omitempty 省略；非 0 出现（重试同 id 幂等）。#10 删无意义别名 notifyIDInt
 	subStatus := loadSubscribeStatus()
 
 	// data 字符串（★ hazard 3）：extras → map → json.Marshal → string。nil/空 → "{}"。
@@ -266,7 +267,7 @@ func sendToHuawei(title, message string, priority int, extras json.RawMessage, t
 				ActionType: 0, // 必须 0（1 要 action/uri → 80100003）
 				Data:       map[string]string{"ts": ts}, // ★ hazard 1：ts 原值透传
 			},
-			NotifyID: notifyIDInt,
+			NotifyID: notifyID,
 		}
 		body := &PushRequestBody{
 			Token:        tok,
@@ -358,11 +359,10 @@ func subscribeLabelEnabled(v string) bool {
 	return false
 }
 
-// readSnippet — 读响应 body 前 n 字符（错误诊断用）。
+// readSnippet — 读响应 body 前 n 字符（错误诊断用,#15 用 LimitReader 防 Read 短读）。
 func readSnippet(r io.Reader, n int) string {
-	buf := make([]byte, n)
-	m, _ := r.Read(buf)
-	return string(buf[:m])
+	b, _ := io.ReadAll(io.LimitReader(r, int64(n)))
+	return string(b)
 }
 
 // truncate — rune 安全截断（中文字符不劈）。

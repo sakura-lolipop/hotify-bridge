@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"sync"
@@ -66,11 +67,10 @@ func loadBridgeConfig(path string) map[string]any {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			fmt.Printf("[配置] ❌ 读取 %s 出错：%v\n", path, err)
+			log.Printf("[配置] ❌ 读取 %s 出错：%v\n", path, err)
 		}
 		return out
 	}
-	def := cfgDefaults()
 	var cfContKey string // cloud_function_urls 续行模式：key 空值后，缩进行的 URL 自动累积
 	for _, line := range strings.Split(string(data), "\n") {
 		stripped := strings.TrimSpace(line)
@@ -79,10 +79,7 @@ func loadBridgeConfig(path string) map[string]any {
 		}
 		// 续行模式：缩进行（前导空格/Tab）→ cloud_function_urls 的 URL（不用 -/引号/[]）
 		if cfContKey != "" && (line[0] == ' ' || line[0] == '\t') {
-			url := stripped
-			if len(url) >= 2 && (url[0] == '"' || url[0] == '\'') && url[0] == url[len(url)-1] {
-				url = url[1 : len(url)-1]
-			}
+			url := trimMatchingQuotes(stripped) // #12 抽 helper
 			if url != "" {
 				out[cfContKey] = appendCFURLs(out[cfContKey], url)
 			}
@@ -96,12 +93,9 @@ func loadBridgeConfig(path string) map[string]any {
 		key = strings.TrimSpace(key)
 		val = strings.SplitN(val, " #", 2)[0] // 去尾部行内注释（空格+#）
 		val = strings.TrimSpace(val)
-		// 去外层匹配引号（" 或 '，必须首尾同字符且长度≥2）
-		if len(val) >= 2 && (val[0] == '"' || val[0] == '\'') && val[0] == val[len(val)-1] {
-			val = val[1 : len(val)-1]
-		}
+		val = trimMatchingQuotes(val) // #12 抽 helper（去外层匹配引号）
 		switch {
-		case isListDefaultKey(key, def):
+		case isCFURLsKey(key):
 			// cloud_function_urls：同行值（url / ["a","b"]）或空值+缩进续行
 			if val == "" {
 				cfContKey = key // 空值 → 下面缩进行的 URL 自动累积
@@ -112,9 +106,8 @@ func loadBridgeConfig(path string) map[string]any {
 				out[key] = appendCFURLs(out[key], val)
 			}
 		case strings.HasPrefix(val, "[") && strings.HasSuffix(val, "]"):
-			// list 字面量（非 cloud_function_urls 的其他 key）→ json.Unmarshal
-			var arr []string
-			if json.Unmarshal([]byte(val), &arr) == nil {
+			// list 字面量（非 cloud_function_urls 的其他 key）→ parseStrArray
+			if arr, ok := parseStrArray(val); ok {
 				out[key] = arr
 			} else {
 				out[key] = val
@@ -131,11 +124,10 @@ func loadBridgeConfig(path string) map[string]any {
 func appendCFURLs(existing any, val string) []string {
 	list, _ := existing.([]string)
 	if strings.HasPrefix(val, "[") && strings.HasSuffix(val, "]") {
-		var arr []string
-		if json.Unmarshal([]byte(val), &arr) == nil {
+		if arr, ok := parseStrArray(val); ok {
 			return append(list, arr...)
 		}
-		fmt.Printf("[配置] ⚠️ cloud_function_urls 值形似 JSON 数组但解析失败，按原样当 URL 保留：%s\n", val)
+		log.Printf("[配置] ⚠️ cloud_function_urls 值形似 JSON 数组但解析失败，按原样当 URL 保留：%s\n", val)
 	}
 	if trimmed := strings.Trim(val, "[]\"' \t"); trimmed != "" {
 		return append(list, trimmed)
@@ -143,9 +135,26 @@ func appendCFURLs(existing any, val string) []string {
 	return list // 空值 → 保留已有（首次 nil → 后续 append）
 }
 
-// isListDefaultKey — 该 key 在 defaults 里是 list 类型（仅 cloud_function_urls）。
-func isListDefaultKey(key string, def Config) bool {
+// isCFURLsKey — 该 key 是 cloud_function_urls（list 类型默认值,仅此一个,#7 删死参数 def）。
+func isCFURLsKey(key string) bool {
 	return key == "cloud_function_urls"
+}
+
+// parseStrArray — JSON 数组字符串 → []string（#11 抽共通,loadBridgeConfig/appendCFURLs 共用）。
+func parseStrArray(s string) ([]string, bool) {
+	var arr []string
+	if json.Unmarshal([]byte(s), &arr) == nil {
+		return arr, true
+	}
+	return nil, false
+}
+
+// trimMatchingQuotes — 去外层匹配引号（"/'，首尾同字符且长度≥2；#12 抽共通,cfCont 续行/主解析共用）。
+func trimMatchingQuotes(s string) string {
+	if len(s) >= 2 && (s[0] == '"' || s[0] == '\'') && s[0] == s[len(s)-1] {
+		return s[1 : len(s)-1]
+	}
+	return s
 }
 
 // ──────────────────────────── 点更新写入器（镜像 Python save_bridge_config）────────────────────────────
@@ -163,7 +172,7 @@ func saveBridgeConfig() {
 	if data, err := os.ReadFile(bridgeConfigFile); err == nil {
 		content = string(data)
 	} else if !os.IsNotExist(err) {
-		fmt.Printf("[配置] save 读取失败：%v\n", err)
+		log.Printf("[配置] save 读取失败：%v\n", err)
 		return
 	}
 	if content != "" && !strings.HasSuffix(content, "\n") {
@@ -195,7 +204,7 @@ func saveBridgeConfig() {
 		out = append(out, fmt.Sprintf("gotify_token: %s\n", gtok))
 	}
 	if err := os.WriteFile(bridgeConfigFile, []byte(strings.Join(out, "")), 0644); err != nil {
-		fmt.Printf("[配置] save 写入失败：%v\n", err)
+		log.Printf("[配置] save 写入失败：%v\n", err)
 	}
 }
 
@@ -266,11 +275,11 @@ subscribe_label: %s
 cloud_function_token: %s
 `, d.GotifyURL, d.GotifyToken, d.GotifyURLLocal, d.GotifyConfigPath, d.TLSCertFile, d.TLSKeyFile, d.SubscribeLabel, d.CloudFunctionToken)
 	if err := os.WriteFile(bridgeConfigFile, []byte(content), 0644); err != nil {
-		fmt.Printf("[配置] 生成 %s 失败：%v\n", bridgeConfigFile, err)
+		log.Printf("[配置] 生成 %s 失败：%v\n", bridgeConfigFile, err)
 		return
 	}
-	fmt.Printf("[配置] 未找到 %s，已生成一份（带注释 + 默认值）。\n", bridgeConfigFile)
-	fmt.Printf("[配置] ✏️ 请编辑 %s：必填 gotify_token + cloud_function_urls，存盘后重启。\n", bridgeConfigFile)
+	log.Printf("[配置] 未找到 %s，已生成一份（带注释 + 默认值）。\n", bridgeConfigFile)
+	log.Printf("[配置] ✏️ 请编辑 %s：必填 gotify_token + cloud_function_urls，存盘后重启。\n", bridgeConfigFile)
 }
 
 // ──────────────────────────── initConfig（镜像 Python init_config，CP0 仅配置加载）────────────────────────────
