@@ -20,9 +20,11 @@ COPY go/ ./
 # GOPROXY：proxy.golang.org 国内被墙（实测 connection refused），用 goproxy.cn（七牛，全球可达 + 国内快），direct 兜底。
 # 可 build-arg 覆盖：docker build --build-arg GOPROXY=https://proxy.golang.org,direct .
 ARG GOPROXY=https://goproxy.cn,direct
-# 参数同 go/build-all.sh：CGO_ENABLED=0 静态、-trimpath 去开发机路径、-ldflags="-s -w" strip 调试符号
+# 参数同 go/build-all.sh：CGO_ENABLED=0 静态、-trimpath 去开发机路径、-ldflags strip + 注入 version/commit/buildDate
+# version/commit/buildDate 由 docker-release.yml build-arg 传(git describe/rev-parse/date);本地 docker build 默认 dev
+ARG VERSION=dev COMMIT=dev BUILDDATE=unknown
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -trimpath -ldflags="-s -w" -o /out/hotify-bridge .
+    go build -trimpath -ldflags="-s -w -X main.version=$VERSION -X main.commit=$COMMIT -X main.buildDate=$BUILDDATE" -o /out/hotify-bridge .
 
 # ── runtime：最小 + CA 证书 ──
 FROM alpine:3.20

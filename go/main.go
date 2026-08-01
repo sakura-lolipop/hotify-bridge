@@ -14,8 +14,16 @@ import (
 
 // ──────────────────────────── 入口（CP1：initConfig + banner + go startRegisterServer）────────────────────────────
 // CP2 接入 go keepSubscribed(ctx)。
+// version/commit/buildDate 由 Dockerfile ldflags 注入(docker-release.yml build-arg 传;本地 go build = dev)
+var (
+	version   = "dev"
+	commit    = "dev"
+	buildDate = "unknown"
+)
+
 func main() {
 	initConfig()
+	log.Printf("[Hotify 推送服务] version=%s commit=%s buildDate=%s", version, commit, buildDate)
 
 	// banner（对齐 Python __main__ 打印）
 	cfgMu.RLock()

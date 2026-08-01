@@ -48,6 +48,9 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |                # C.5 注入 version/commit 进镜像(本地 docker build 默认 dev)
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
 
   # ════════════ 阿里云 ACR（国内）════════════
   # registry 用新版个人版域名（crpi-xxx.personal.cr.aliyuncs.com），非老版 registry.cn-xxx.aliyuncs.com。
@@ -82,3 +85,6 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
+          build-args: |                # C.5 注入 version/commit 进镜像(同 GHCR job)
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}

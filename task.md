@@ -17,7 +17,7 @@
 - [ ] **App「部署指引」外链改指 Gitee**：HotifyNEXT App 仓里那条链接，从 GitHub README 改成 `gitee.com/sakura-lolipop/hotify-bridge/blob/main/docker.md`（国内可达）。不在本仓改。
 - [ ] **GHCR 翻 Public（可选/低优先）**：仅海外用户需要；Hotify 国内为主、ACR 已覆盖，可跳过，或干脆删 `docker-release.yml` 的 ghcr job 只留 ACR。
 - [~] ~~Gitee 令牌轮换~~（用户选择不轮换——令牌在对话露过几次、风险已知，不再催）。
-- [ ] **下次发版流程**（备忘）：改代码 → `git push origin`（dual-push 自动 GitHub+Gitee）→ 打 `v*` tag（触发 go-release/release/docker-release）→ 本地 `GITEE_TOKEN=新令牌 bash scripts/gitee-upload.sh vX.Y.Z` 传 Gitee 二进制。
+- [ ] **下次发版流程**（备忘）：改代码 → `git push origin`（dual-push 自动 GitHub+Gitee）→ 打 `v*` tag（触发 go-release/docker-release）→ **★ 必跑 `GITEE_TOKEN=新令牌 bash scripts/gitee-upload.sh vX.Y.Z` 传 Gitee 二进制**（CI 境外传 Gitee 挂死,只能本地;忘跑 → 国内用户只 GitHub Releases 拉不动）。
 
 > 上面"下一步"是我按这轮收尾推断的清单，实际路线你改。
 

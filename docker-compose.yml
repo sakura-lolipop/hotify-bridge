@@ -34,9 +34,9 @@ services:
     #    gotify_url: http://<gotify 容器名>:<端口>   （例：http://gotify:80）
     #    本 compose 没建自定义 network；如要跨容器互访，加 networks: 自定义网或把 gotify 也 compose 起来共享。
     #
-    # B) Gotify 在【宿主机】（非容器，或 host 网络模式）：放开下面 extra_hosts，让容器能寻址宿主；
+    # B) Gotify 在【宿主机】（非容器，或 host 网络模式）：extra_hosts 已默认放开（容器能寻址宿主）;
     #    bridge_config.yaml 填 gotify_url: http://host.docker.internal:<端口>
-    # extra_hosts:
-    #   - "host.docker.internal:host-gateway"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     #
     # C) Gotify 在【远程/域名】：直接 bridge_config.yaml 填完整 https URL，无需本节特殊处理。
