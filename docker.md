@@ -6,7 +6,7 @@
 
 ## 🐳 docker compose（推荐 · SSH-light）
 
-最省心、最不碰 SSH。配置走 **docker-compose.yml 的 environment 两行**（直接编辑文件填值,CLI+GUI 都生效,不依赖 .env);NAS 上还能在 Container Manager 图形界面粘 compose,**全程不开 SSH**。
+最省心、最不碰 SSH。配置走 **docker-compose.yml 的 environment 两行**（直接编辑文件填值,CLI+GUI 都生效);NAS 上还能在 Container Manager 图形界面粘 compose,**全程不开 SSH**。
 
 1. 拿 `docker-compose.yml`（仓里:[Gitee](https://gitee.com/sakura-lolipop/hotify-bridge)）。
 2. 编辑 `docker-compose.yml` 的 `environment:` 两行,填 Gotify 地址 + token（注释里有地址怎么填）:
