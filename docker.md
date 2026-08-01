@@ -6,19 +6,20 @@
 
 ## 🐳 docker compose（推荐 · SSH-light）
 
-最省心、最不碰 SSH。配置走**环境变量**（不编辑服务器上的文件）；NAS 上还能在 Container Manager 图形界面粘 compose + 填 env，**全程不开 SSH**。
+最省心、最不碰 SSH。配置走 **docker-compose.yml 的 environment 两行**（直接编辑文件填值,CLI+GUI 都生效,不依赖 .env);NAS 上还能在 Container Manager 图形界面粘 compose,**全程不开 SSH**。
 
-1. 拿 `docker-compose.yml` + `.env.example`（仓里：[Gitee](https://gitee.com/sakura-lolipop/hotify-bridge)）。
-2. 复制 `.env.example` 成 `.env`，填俩值（注释里有 Gotify 地址怎么填）：
-   ```
-   GOTIFY_CLIENT_TOKEN=你的gotify_client_token
-   GOTIFY_HTTP_URL=https://gotify.你域名.com   # 或 http://gotify容器名:端口 / http://host.docker.internal:端口
+1. 拿 `docker-compose.yml`（仓里:[Gitee](https://gitee.com/sakura-lolipop/hotify-bridge)）。
+2. 编辑 `docker-compose.yml` 的 `environment:` 两行,填 Gotify 地址 + token（注释里有地址怎么填）:
+   ```yaml
+   environment:
+     GOTIFY_HTTP_URL: https://gotify.你域名.com   # 或 http://gotify容器名:端口 / http://host.docker.internal:端口
+     GOTIFY_CLIENT_TOKEN: 你的gotify_client_token
    ```
 3. `docker compose up -d`。
 
-完事——桥读 env 自动配好 gotify；`cloud_function_urls` 不用填（v1.1.2+ 自动从 Gitee fetch）。改配置改 `.env` 再 `up -d`。**全程不 SSH 编辑任何配置文件。**
+完事——桥读 env 自动配好 gotify;`cloud_function_urls` 不用填（v1.1.2+ 自动从 Gitee fetch）。改配置改 compose 这两行再 `up -d`。**全程不 SSH 编辑任何配置文件。**
 
-> NAS GUI：Container Manager「项目」粘 `docker-compose.yml` 内容，环境变量栏填 `GOTIFY_HTTP_URL` / `GOTIFY_CLIENT_TOKEN`，不开 SSH。
+> NAS GUI:Container Manager「项目」粘 `docker-compose.yml` 内容（environment 两行已填好）,不开 SSH。
 
 ## ⚡ 一键脚本 install.sh（可选，SSH 一条命令）
 

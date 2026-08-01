@@ -74,7 +74,7 @@ docker restart hotify-bridge
 
 📖 完整部署指南（NAS GUI、Gotify 容器寻址、公网 HTTPS、排错）见 [`docker.md`](./docker.md)。
 
-或用仓库自带的 [`docker-compose.yml`](./docker-compose.yml)——**v1.1.2+ 走 env**（`.env` 填 `GOTIFY_HTTP_URL`/`GOTIFY_CLIENT_TOKEN`，免 SSH 编辑配置），`docker compose up -d` 即可；更新 `pull` + `up -d`（`./data` 卷保留配置/水位，不重配）。详见 [docker.md](./docker.md)。
+或用仓库自带的 [`docker-compose.yml`](./docker-compose.yml)——**v1.1.2+ 走 env**(编辑 compose 的 `environment:` 两行填 `GOTIFY_HTTP_URL`/`GOTIFY_CLIENT_TOKEN`,免 SSH 编辑配置),`docker compose up -d` 即可;更新 `pull` + `up -d`(`./data` 卷保留配置/水位,不重配)。详见 [docker.md](./docker.md)。
 
 > **⚠️ Gotify 地址在容器里语义不同（Docker 部署最容易踩的坑）**：桥把「只填端口」当成同机 `127.0.0.1`，但**容器里 `127.0.0.1` 是容器自己**，够不到 Gotify。所以 `bridge_config.yaml` 的 `gotify_url` 按拓扑填：
 > - Gotify 在**同机另一容器**：和桥放同一 docker network，填 `http://<gotify 容器名>:<端口>`（如 `http://gotify:80`）

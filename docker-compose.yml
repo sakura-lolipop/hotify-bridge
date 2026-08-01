@@ -12,11 +12,11 @@ services:
     container_name: hotify-bridge
     restart: unless-stopped
 
-    # Gotify 配置走环境变量（免 SSH 编辑 bridge_config.yaml）。值从同目录 .env 读（.env 不入库）。
-    # 两个都留空也行（等 App 上报）。bridge_config.yaml 仍会 seed，但 env 优先填 gotify 两项。
+    # Gotify 配置走环境变量（免 SSH 编辑 bridge_config.yaml）。直接改下面两行填值（CLI+GUI 都生效,
+    # 不依赖 .env——群晖 Container Manager / Portainer 等 GUI 不读 .env;两个都留空也行,等 App 上报）。
     environment:
-      GOTIFY_HTTP_URL: ${GOTIFY_HTTP_URL:-}
-      GOTIFY_CLIENT_TOKEN: ${GOTIFY_CLIENT_TOKEN:-}
+      GOTIFY_HTTP_URL: https://gotify.你域名.com      # ← 改成你的 Gotify 地址（http://gotify容器名:端口 / http://host.docker.internal:端口 同机）
+      GOTIFY_CLIENT_TOKEN: 改成你的token              # ← Gotify WebUI → CLIENTS 的 client token
 
     # /register 端口。左侧是宿主机端口（App 上报 push token 走这），右侧容器内固定 8080。
     # 要改宿主端口改左侧即可；想改容器内端口→bridge_config.yaml 设 register_port 并把右侧一起改。
