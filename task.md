@@ -3,7 +3,9 @@
 > 历史里程碑看 [task-archive.md](./task-archive.md)。本文件保持精简：>300 行或里程碑完成时拆，历史归 task-archive.md。
 
 ## 当前状态
-**v1.1.2 已发版**（含去重重放 + cloud_function_urls Gitee-fetch 两修复；GitHub Release + GHCR/ACR 镜像 + Gitee 二进制全齐）。v1.1.1 曾短暂发布后被 v1.1.2 取代移除。Docker 一键（install.sh + ACR）+ compose（SSH-light，走 env）+ 各平台 Go 二进制 + 小白 README 都就位。
+**v1.1.5 已发版**（tag v1.1.5 双推,CI 跑 go-release + docker-release）。本版累积:cooldown 退避熔断 + Python 归档(Go 唯一主线)+ 屎山快修 9 条 + urls 重排(push.hotify.love 主)+ **发布规范 C.1-C.6**(去 .env 怪文件→compose 直填 GUI 友好 / 砍 Python release / body 去重 / Gitee checklist / version 注入 / extra_hosts)。**Gitee 二进制待手动 `scripts/gitee-upload.sh v1.1.5`**。
+
+v1.1.2 曾发版(去重重放 + cloud_function_urls Gitee-fetch);v1.1.1 短暂发布后移除。
 
 **+ 2026-08-01（本地待 push + 待发版）**：
 - Go 加 **cooldown 熔断**（退避 60→180→540→900s，cap 15min；翻 bug.md YAGNI 拒绝案）—— commit `acfe2a4`
