@@ -41,11 +41,13 @@ if [ -n "$OLD" ]; then
   sleep 2   # 给 Gitee 传播时间，免得立刻建撞"该标签已存在发行版"
 fi
 
-echo "=== 建新 release（带重试：Gitee create 偶发抽风返空 id）==="
+echo "=== 建新 release（body 走 UTF-8 模板文件 + token 走 query，避 Windows curl inline 中文 cp936→400）==="
+BODY_TMP="$(mktemp)"
+sed "s/__TAG__/$TAG/g" "$(git rev-parse --show-toplevel)/scripts/gitee-release-body.tmpl.json" > "$BODY_TMP"
 RID=""
 for attempt in 1 2 3 4; do
-  RID=$(curl -fsSL --max-time 30 -X POST "$API/releases" -H "Content-Type: application/json" \
-    -d "{\"access_token\":\"$TOKEN\",\"tag_name\":\"$TAG\",\"name\":\"hotify-bridge $TAG\",\"body\":\"Go 二进制（GitHub Releases 国内拉不动，此处镜像）。免 Docker 用户下对应平台包直接跑；Docker 部署看 docker.md / README。\",\"target_commitish\":\"main\"}" \
+  RID=$(curl -fsSL --max-time 30 -X POST "$API/releases?access_token=$TOKEN" -H "Content-Type: application/json" \
+    -d @"$BODY_TMP" \
     2>/dev/null | grep -oE '"id":[0-9]+' | head -1 | cut -d: -f2)
   [ -n "$RID" ] && break
   # create 没返 id：可能前一次已建成（grep 漏了）/ 已存在 → 按 tag 找复用
@@ -53,6 +55,7 @@ for attempt in 1 2 3 4; do
   [ -n "$RID" ] && { echo "（release 已存在，复用 id=$RID）"; break; }
   echo "  建 release 第 $attempt 次没拿到 id，重试..."; sleep 2
 done
+rm -f "$BODY_TMP"
 echo "新 release id=$RID"
 [ -n "$RID" ] || { echo "❌ 建 release 多次失败（Gitee 抽风）；过会儿重跑本脚本"; exit 1; }
 

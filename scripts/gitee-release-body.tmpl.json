@@ -1,0 +1,1 @@
+{"tag_name":"__TAG__","name":"hotify-bridge __TAG__","body":"Go 二进制（GitHub Releases 国内拉不动，此处镜像）。免 Docker 用户下对应平台包直接跑；Docker 部署看 docker.md / README。","target_commitish":"main"}
