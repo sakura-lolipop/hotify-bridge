@@ -3,7 +3,7 @@
 > 历史里程碑看 [task-archive.md](./task-archive.md)。本文件保持精简：>300 行或里程碑完成时拆，历史归 task-archive.md。
 
 ## 当前状态
-**v1.1.5 已发版**（tag v1.1.5 双推,CI 跑 go-release + docker-release）。本版累积:cooldown 退避熔断 + Python 归档(Go 唯一主线)+ 屎山快修 9 条 + urls 重排(push.hotify.love 主)+ **发布规范 C.1-C.6**(去 .env 怪文件→compose 直填 GUI 友好 / 砍 Python release / body 去重 / Gitee checklist / version 注入 / extra_hosts)。**Gitee 二进制待手动 `scripts/gitee-upload.sh v1.1.5`**。
+**v1.1.6 已发版**（2026-08-06，tag 双推 GitHub+Gitee；GitHub go-release.yml success 5 平台二进制；Gitee 镜像 release 777622+5 二进制）。本版累积（自 v1.1.4）：cooldown 退避熔断 + Python 归档(Go 唯一主线)+ 屎山快修 9 条 + urls 重排(push.hotify.love 主)+ 发布规范 C.1-C.6 + **cfGone 4xx 分流**（修 CF 误熔断，对齐 NEXT-Server）+ **gitee-upload.sh cp936 修复**（create body 走 UTF-8 模板文件 `scripts/gitee-release-body.tmpl.json`，避 Windows curl inline 中文→Gitee 400）。CHANGELOG 见 CHANGELOG.md。
 
 v1.1.2 曾发版(去重重放 + cloud_function_urls Gitee-fetch);v1.1.1 短暂发布后移除。
 
