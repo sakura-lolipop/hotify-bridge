@@ -2,6 +2,22 @@
 
 桥（hotify-bridge）的 notable 变化。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/)。
 
+## [v1.1.6] — 2026-08-06
+
+### Fixed
+- **CF 4xx 分流修误熔断**：CF 返 400/413（消息级——输入错/body 太大）不再触发 cooldown 熔断，只 fallback 下一个 URL，**CF 不背发送方的锅**。原 4xx 一律 recordCfFail → 一条大消息/坏输入就熔断 CF，连坐后续正常小消息。新增 `statusCfGone`（401/404/200非JSON = CF 结构性不可用 → 仍熔断）区分 `statusCfDown`（400/413 = 消息级 → 不熔断）。配合 CF 改纯透传（CF 不再把华为 413 洗成 502）。对齐 NEXT-Server 同款分流；build/vet/test 绿。
+
+## [v1.1.5] — 2026-08-01
+
+### Added
+- **Go cooldown 熔断**（翻 bug.md「YAGNI 不加熔断」案）：CF URL 连续失败 N 次 → cooldown 指数退避（60s/180s/540s/900s cap），期间跳过该 URL 直接 fallback。防 CF 持续挂时每条消息白等 ~45s（3×15s 超时）才切。
+### Changed
+- **Python 版归档**，Go 版成主线（CGO_ENABLED=0 交叉编译单二进制）。
+- CF fallback 按失败层决策：HTTP 200 = CF 健康/Push Kit 应答（CF2 同果 → 不 fallback 省 consumption）；非 200 = CF 挂 → fallback。堵 CF1 配额耗尽漏发/迟发。
+- lenient `cloud_function_urls` parsing（多行 + tests，修 bug #6）；默认加 push.hotify.love（VPS 主）第一行。
+- 屎山快修批 #1/#2/#6/#7/#10/#11/#12/#15/#3（push 部分）。
+- 发布规范 C.1-C.6（用户文档去 `.env`、砍 Python release、body 去重、docker.md 去"不依赖 .env"措辞）。
+
 ## [v1.1.4] — 2026-07-27
 
 ### Fixed
