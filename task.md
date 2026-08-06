@@ -31,3 +31,9 @@ v1.1.2 曾发版(去重重放 + cloud_function_urls Gitee-fetch);v1.1.1 短暂�
 - **README 两版同步**：改 `README.md`（小白）要同步 `README_FULL.md`（详细），别让两份漂移。
 - **专项文档**：`docker.md`（Docker 部署）、`gitee.md`（Gitee 镜像）、`dualpush.md`（双推方案 + 镜像构建，维护者参考）、`BRIDGE.md`（运行手册深入）。各自独立维护。
 - **机密**：`bridge_config.yaml` / `push_tokens.json` / `private.md` / 任何令牌**绝不入库**（`.gitignore` 已挡；提交前扫一眼 `git status`）。
+
+---
+
+## 2026-08-06 4xx 分流（cfGone）对齐 NEXT（commit `586802f` 双推 GitHub+Gitee）
+
+配合 CF 改纯透传：`postToPushService` + enum 加 `statusCfGone`（401/404/200非JSON→recordCfFail 熔断），`statusCfDown`（400/413→只 fallback 不计 fail，CF 不背发送方锅）。`sendToHuawei` tail `if attemptStatus != statusCfDown { recordCfFail }`（retry 用尽/cfGone→熔断；cfDown→不熔断）。对齐 NEXT harmony.go 同款分流。build/vet/test 绿。详见 docs/PushKitAPI.md。
