@@ -38,10 +38,10 @@ var (
 )
 
 const (
-	cfFailThreshold = 3                  // 连续失败 N 次 → 触发熔断
-	cfBaseCooldown  = 60 * time.Second   // 首次熔断 cooldown（退避起点）
-	cfBackoffMult   = 3                  // 每次熔断 cooldown ×N（指数退避）
-	cfMaxCooldown   = 900 * time.Second  // 退避上限（15 分钟）
+	cfFailThreshold = 3                 // 连续失败 N 次 → 触发熔断
+	cfBaseCooldown  = 60 * time.Second  // 首次熔断 cooldown（退避起点）
+	cfBackoffMult   = 3                 // 每次熔断 cooldown ×N（指数退避）
+	cfMaxCooldown   = 900 * time.Second // 退避上限（15 分钟）
 )
 
 // cfOnCooldown — url 在 cooldown 中（跳过,直接 fallback 下一个）?过期则清（half-open 允许试一条）。
@@ -102,7 +102,8 @@ const (
 	statusDead                          // 200 + 死-token 码（80100000/80300007）
 	statusSystemError                   // 终态·不 fallback：200+其他码（Push Kit 拒：超长/权益…）/ 本地 body 序列化错（CF2 同果，省消费）
 	statusRetry                         // 非200·瞬态：5xx/429/超时/网络 → 重试 ≤3 再 fallback
-	statusCfDown                        // 非200·硬挂：4xx / 200+非JSON / URL 格式错 → 立即 fallback、不重试
+	statusCfGone                        // 非200·结构性不可用：401/404/200+非JSON → 立即 fallback、计 fail 熔断（换 URL 也持久坏）
+	statusCfDown                        // 非200·消息级：400/413/其他4xx/URL 格式错 → 立即 fallback、不重试、不计 fail（CF 不背发送方的锅）
 )
 
 // ──────────────────────────── Push Kit notification / body 结构（★ 多 hazard 落点）────────────────────────────
@@ -127,10 +128,10 @@ type Notification struct {
 // PushRequestBody — 桥→云函数 POST body。
 // ★ hazard 3：Data 是 JSON 字符串非对象（json.Marshal(extras) 嵌入；对象型被 Push Kit 拒）。
 type PushRequestBody struct {
-	Token        string      `json:"token"`
+	Token        string       `json:"token"`
 	Notification Notification `json:"notification"`
-	Data         string      `json:"data"`
-	TestMessage  bool        `json:"testMessage"`
+	Data         string       `json:"data"`
+	TestMessage  bool         `json:"testMessage"`
 }
 
 // ──────────────────────────── 单次 POST（镜像 Python _post_to_push_service）────────────────────────────
@@ -161,12 +162,12 @@ func postToPushService(url, cfToken string, body *PushRequestBody) (pushStatus, 
 		switch {
 		case resp.StatusCode >= 500 || resp.StatusCode == 429:
 			return statusRetry, "", fmt.Sprintf("HTTP %d %s（服务端临时故障/限流，重试）", resp.StatusCode, snippet)
-		case resp.StatusCode == 401:
-			// 401 多半 cloud_function_token 配错（全局单值，CF2 多半也 401）；但仍走 CfDown fallback 一次——部署配错窗口短暂，不为它开特例
-			return statusCfDown, "", "HTTP 401 unauthorized（cloud_function_token 配错？）" + snippet
+		case resp.StatusCode == 401 || resp.StatusCode == 404:
+			// 401(鉴权错)/404(CF 删了) = 该 CF 结构性不可用 → 计 fail 熔断（避免反复戳坏端点）
+			return statusCfGone, "", fmt.Sprintf("HTTP %d %s（CF 不可用，熔断）", resp.StatusCode, snippet)
 		default:
-			// 4xx（400/402/403…）= CF 平台层硬挂（配额耗尽/封禁/鉴权）→ 不会 1s 自愈，不重试，立即 fallback 下个 URL
-			return statusCfDown, "", fmt.Sprintf("HTTP %d %s（CF 平台层故障，fallback）", resp.StatusCode, snippet)
+			// 400(输入)/413(透传华为"太大")/其他4xx = 这条消息的问题 → 只 fallback，不计 fail（别让 CF 背发送方的锅）
+			return statusCfDown, "", fmt.Sprintf("HTTP %d %s（消息级，fallback 不熔断）", resp.StatusCode, snippet)
 		}
 	}
 
@@ -177,7 +178,7 @@ func postToPushService(url, cfToken string, body *PushRequestBody) (pushStatus, 
 		Msg  string `json:"msg"`
 	}
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return statusCfDown, "", "HTTP 200 但 body 非 JSON（CF 异常/错误页，fallback）：" + truncate(string(respBody), 160)
+		return statusCfGone, "", "HTTP 200 但 body 非 JSON（CF 异常/错误页，熔断）：" + truncate(string(respBody), 160)
 	}
 	code := anyToCodeStr(result.Code)
 	if code == "80000000" {
@@ -261,10 +262,10 @@ func sendToHuawei(title, message string, priority int, extras json.RawMessage, t
 
 		notification := Notification{
 			Category: notifyCategory,
-			Title:     orVal(title, "Hotify"),
-			Body:      message,
+			Title:    orVal(title, "Hotify"),
+			Body:     message,
 			ClickAction: ClickAction{
-				ActionType: 0, // 必须 0（1 要 action/uri → 80100003）
+				ActionType: 0,                           // 必须 0（1 要 action/uri → 80100003）
 				Data:       map[string]string{"ts": ts}, // ★ hazard 1：ts 原值透传
 			},
 			NotifyID: notifyID,
@@ -295,8 +296,10 @@ func sendToHuawei(title, message string, priority int, extras json.RawMessage, t
 					log.Printf("[PushKit] ✗ %s code=%s msg=%s → 该 token 无效  (url=%s)", devID, code, msg, u)
 				case statusSystemError:
 					log.Printf("[PushKit] ⚠️ %s %s → 保留（CF 健康/Push Kit 拒，CF2 同果，不 fallback）  (url=%s)", devID, msg, u)
+				case statusCfGone:
+					log.Printf("[PushKit] ⚡ %s %s → CF 不可用(401/404)，熔断+fallback  (url=%s)", devID, msg, u)
 				case statusCfDown:
-					log.Printf("[PushKit] ⚡ %s %s → CF 平台层故障，fallback 下一个 URL  (url=%s)", devID, msg, u)
+					log.Printf("[PushKit] ↪ %s %s → 消息级拒绝(400/413)，fallback 不熔断  (url=%s)", devID, msg, u)
 				case statusRetry:
 					if attempt < pushRetryLimit {
 						log.Printf("[PushKit] ↻ %s %s → 重试 %d/%d  (url=%s)", devID, msg, attempt+1, pushRetryLimit, u)
@@ -310,9 +313,12 @@ func sendToHuawei(title, message string, priority int, extras json.RawMessage, t
 			finalStatus, finalMsg = attemptStatus, attemptMsg
 			if attemptStatus == statusDelivered || attemptStatus == statusDead || attemptStatus == statusSystemError {
 				recordCfOk(u) // CF 健康（200）→ 重置 fail + 清 cooldown
-				break        // 终态（CF2 同果）→ 不 fallback；cfDown/retry 用尽 → 落到下一个 URL
+				break         // 终态（CF2 同果）→ 不 fallback；cfDown/cfGone/retry 用尽 → 落到下一个 URL
 			}
-			recordCfFail(u) // cfDown / retry 用尽 = CF 挂 → 计 fail（达阈值熔断）
+			if attemptStatus != statusCfDown {
+				recordCfFail(u) // cfGone(401/404) / retry 用尽 = CF 挂 → 计 fail（达阈值熔断）
+			}
+			// statusCfDown(400/413) = 消息级，不计 fail（CF 不背发送方的锅）→ 直接 fallback 下个 URL
 		}
 
 		switch finalStatus {
@@ -320,7 +326,7 @@ func sendToHuawei(title, message string, priority int, extras json.RawMessage, t
 			delivered++
 		case statusDead:
 			dead = append(dead, devID)
-		case statusRetry, statusCfDown:
+		case statusRetry, statusCfDown, statusCfGone:
 			log.Printf("[PushKit] ✗ %s 所有 URL 都失败 → 保留 token（下次再推）：%s", devID, finalMsg)
 			// system_error 已在上面打印过
 		}
