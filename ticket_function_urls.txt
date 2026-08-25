@@ -2,4 +2,4 @@
 # 票端点签短 exp PS256 JWT（不见通知内容），Server 拿票自己直连华为 push-api。
 # 契约见 docs/pushkit-transport.md §9.7；节点部署见 CloudFuction-Ticket / CloudFuction-VPS-Ticket。
 https://ticket.hotify.love/
-https://cloudfuction-ticket.netlify.app/api/ticket
+https://ticket.lovesweet.online/api/ticket
